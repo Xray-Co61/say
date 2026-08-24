@@ -72,7 +72,8 @@ Game::~Game() {
 void Game::initialise() {
     worldShader_ = Shader(shaders::worldVertex, shaders::worldFragment, "world");
     skyShader_ = Shader(shaders::skyVertex, shaders::skyFragment, "sky");
-    angelShader_ = Shader(shaders::angelVertex, shaders::angelFragment, "angel sprite");
+    angelShader_ = Shader(shaders::angelVertex, shaders::angelFragment, "angel signal");
+    projectileShader_ = Shader(shaders::angelVertex, shaders::projectileFragment, "red shell");
     postShader_ = Shader(shaders::postVertex, shaders::postFragment, "cinematic post");
     hudShader_ = Shader(shaders::hudVertex, shaders::hudFragment, "optic hud");
 
@@ -365,7 +366,7 @@ void Game::updateAim(float deltaSeconds) {
 
     // A constrained sight aperture: the player moves an optic, never a free camera.
     yawDegrees_ = clamp(yawDegrees_ + horizontalSpeed * deltaSeconds + mouseDeltaX_ * 0.014F, -102.0F, -78.0F);
-    pitchDegrees_ = clamp(pitchDegrees_ + verticalSpeed * deltaSeconds - mouseDeltaY_ * 0.014F, -8.0F, 12.0F);
+    pitchDegrees_ = clamp(pitchDegrees_ + verticalSpeed * deltaSeconds - mouseDeltaY_ * 0.014F, -4.0F, 23.0F);
     mouseDeltaX_ = 0.0F;
     mouseDeltaY_ = 0.0F;
 
@@ -472,17 +473,18 @@ void Game::resetAngel(Angel& angel, bool immediatelyVisible) {
     angel.heading = flatForward;
     angel.side = right;
     angel.velocity = flatForward * speed + right * randomRange(-3.0F, 3.0F);
-    angel.scale = randomRange(1.35F, 2.95F);
-    angel.waveAmplitude = randomRange(0.35F, 2.6F);
+    angel.scale = randomRange(1.55F, 3.45F);
+    angel.waveAmplitude = randomRange(0.25F, 2.0F);
     angel.waveFrequency = randomRange(0.24F, 0.68F);
     angel.phase = randomRange(0.0F, 2.0F * kPi);
-    angel.baseAltitude = cameraPosition_.y + randomRange(10.0F, 44.0F);
+    // The optic is below the flight path: every signal crosses above the player.
+    angel.baseAltitude = cameraPosition_.y + randomRange(48.0F, 86.0F);
 
     if (immediatelyVisible) {
-        const float distance = randomRange(420.0F, 980.0F);
-        angel.position = cameraPosition_ + flatForward * distance + right * randomRange(-distance * 0.075F, distance * 0.075F);
+        const float distance = randomRange(230.0F, 460.0F);
+        angel.position = cameraPosition_ + flatForward * distance + right * randomRange(-distance * 0.070F, distance * 0.070F);
     } else {
-        angel.position = cameraPosition_ - flatForward * randomRange(260.0F, 760.0F) + right * randomRange(-78.0F, 78.0F);
+        angel.position = cameraPosition_ - flatForward * randomRange(190.0F, 510.0F) + right * randomRange(-54.0F, 54.0F);
     }
     angel.position.y = angel.baseAltitude + std::sin(angel.phase) * angel.waveAmplitude;
 
@@ -565,7 +567,7 @@ void Game::acquireLock() {
 void Game::resetEncounter() {
     cameraPosition_ = {0.0F, terrainHeight(0.0F, 0.0F) + 3.0F, 0.0F};
     yawDegrees_ = -90.0F;
-    pitchDegrees_ = -2.0F;
+    pitchDegrees_ = 11.0F;
     zoom_ = 1.0F;
     projectiles_.clear();
     angels_.clear();
@@ -582,10 +584,10 @@ void Game::resetEncounter() {
     if (!angels_.empty()) {
         Angel& guide = angels_.front();
         const Vec3 forward = normalise({cameraForward().x, 0.0F, cameraForward().z});
-        guide.position = cameraPosition_ + forward * 620.0F;
-        guide.baseAltitude = cameraPosition_.y + 8.0F;
+        guide.position = cameraPosition_ + forward * 290.0F;
+        guide.baseAltitude = cameraPosition_.y + 66.0F;
         guide.position.y = guide.baseAltitude;
-        guide.waveAmplitude = 0.65F;
+        guide.waveAmplitude = 0.45F;
         guide.trail.clear();
         for (int sample = 0; sample < 22; ++sample) {
             guide.trail.push_back(guide.position - guide.velocity * (static_cast<float>(22 - sample) * 0.05F));
@@ -674,6 +676,8 @@ void Game::renderAngel(const Angel& angel, const Mat4& view, const Mat4& project
     angelShader_.setFloat("uDisruption", std::max(0.0F, angel.disruption));
     angelShader_.setFloat("uTime", elapsedSeconds_);
     angelShader_.setFloat("uSeed", angel.phase);
+    const float belowAngle = clamp(((angel.position.y - cameraPosition_.y) / std::max(distance, 0.001F) - 0.07F) / 0.28F, 0.0F, 1.0F);
+    angelShader_.setFloat("uBelowAngle", belowAngle);
     glDisable(GL_CULL_FACE);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -723,14 +727,10 @@ void Game::renderProjectiles(const Mat4& view, const Mat4& projection) {
     for (const Projectile& projectile : projectiles_) {
         for (std::size_t index = 1; index < projectile.trail.size(); ++index) {
             const float intensity = static_cast<float>(index) / static_cast<float>(projectile.trail.size() - 1);
-            const Vec3 color = lerp({0.015F, 0.055F, 0.048F}, {0.55F, 0.86F, 0.72F}, intensity);
-            vertices.push_back({projectile.trail[index - 1], {}, color * 0.48F});
+            const Vec3 color = lerp({0.06F, 0.001F, 0.0005F}, {0.95F, 0.055F, 0.008F}, intensity);
+            vertices.push_back({projectile.trail[index - 1], {}, color * 0.32F});
             vertices.push_back({projectile.trail[index], {}, color});
         }
-
-        const float markerSize = 0.16F;
-        vertices.push_back({projectile.position - kUp * markerSize, {}, {0.72F, 0.92F, 0.80F}});
-        vertices.push_back({projectile.position + kUp * markerSize, {}, {0.72F, 0.92F, 0.80F}});
     }
     projectileLines_.updateVertices(vertices);
 
@@ -741,15 +741,35 @@ void Game::renderProjectiles(const Mat4& view, const Mat4& projection) {
     worldShader_.setVec3("uCameraPosition", cameraPosition_);
     worldShader_.setVec3("uFogColor", {0.008F, 0.092F, 0.082F});
     worldShader_.setVec3("uLightDirection", {-0.28F, 0.68F, 0.31F});
-    worldShader_.setVec3("uEmission", {0.18F, 0.40F, 0.32F});
-    worldShader_.setFloat("uFogDensity", 0.0028F);
-    worldShader_.setFloat("uOpacity", 0.84F);
+    worldShader_.setVec3("uEmission", {0.55F, 0.018F, 0.004F});
+    worldShader_.setFloat("uFogDensity", 0.0019F);
+    worldShader_.setFloat("uOpacity", 0.80F);
 
     glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
     glDepthMask(GL_FALSE);
     projectileLines_.draw();
+
+    const Vec3 forward = cameraForward();
+    const Vec3 right = cameraRight();
+    const Vec3 up = normalise(cross(right, forward));
+    projectileShader_.use();
+    projectileShader_.setMat4("uView", view);
+    projectileShader_.setMat4("uProjection", projection);
+    projectileShader_.setVec3("uCameraRight", right);
+    projectileShader_.setVec3("uCameraUp", up);
+    projectileShader_.setFloat("uTime", elapsedSeconds_);
+
+    glDisable(GL_CULL_FACE);
+    for (const Projectile& projectile : projectiles_) {
+        projectileShader_.setVec3("uCenter", projectile.position);
+        projectileShader_.setFloat("uScale", 0.32F);
+        projectileShader_.setFloat("uAge", projectile.age);
+        skyQuad_.draw();
+    }
+    glEnable(GL_CULL_FACE);
     glDepthMask(GL_TRUE);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
 
 void Game::renderHud() {
@@ -805,7 +825,7 @@ void Game::renderHud() {
         for (int section = 0; section < 12; ++section) {
             const float first = 2.0F * kPi * static_cast<float>(section) / 12.0F;
             const float second = 2.0F * kPi * static_cast<float>(section + 1) / 12.0F;
-            const HudColor pulseColor{0.22F, 0.36F, 0.31F, pulse * 0.25F};
+            const HudColor pulseColor{0.88F, 0.08F, 0.015F, pulse * 0.32F};
             addHudLine(vertices, std::cos(first) * radius, std::sin(first) * radius,
                        std::cos(second) * radius, std::sin(second) * radius, pulseColor);
         }

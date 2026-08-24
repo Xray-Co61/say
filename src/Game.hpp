@@ -71,6 +71,7 @@ private:
     Shader worldShader_{};
     Shader skyShader_{};
     Shader angelShader_{};
+    Shader projectileShader_{};
     Shader postShader_{};
     Shader hudShader_{};
 
@@ -93,7 +94,7 @@ private:
 
     Vec3 cameraPosition_{};
     float yawDegrees_ = -90.0F;
-    float pitchDegrees_ = -2.0F;
+    float pitchDegrees_ = 11.0F;
     float zoom_ = 1.0F;
     float elapsedSeconds_ = 0.0F;
     float spawnClock_ = 0.0F;
