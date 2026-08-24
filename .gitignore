@@ -1,0 +1,28 @@
+# CMake / native build outputs
+/build/
+/out/
+/cmake-build-*/
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/compile_commands.json
+
+# Visual Studio / VS Code local state
+/.vs/
+.vscode/*.ipch
+*.suo
+*.user
+*.VC.db
+*.VC.opendb
+
+# Platform binaries and logs
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.obj
+*.lib
+*.a
+*.so
+*.dylib
+*.log
