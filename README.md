@@ -34,7 +34,7 @@
 ### پیش‌نیازِ یک‌باره
 
 1. **Visual Studio 2022 Community** یا **Build Tools 2022** را با workloadِ **Desktop development with C++** نصب کن.
-2. **CMake 3.24+** و Git باید در `PATH` باشند.
+2. Git باید در `PATH` باشد. اسکریپت در صورت نبودن CMake، ابتدا تلاش می‌کند آن را با `winget` نصب کند؛ در غیر این صورت CMake 3.24+ را دستی نصب کن.
 3. درایور GPU باید OpenGL 3.3 یا جدیدتر را پشتیبانی کند.
 
 سپس پوشهٔ پروژه را در VS Code باز کن، ترمینال PowerShell را باز کن و فقط این را بزن:
