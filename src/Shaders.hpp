@@ -188,11 +188,16 @@ void main() {
     // Fine per-feather variation without a texture: enough irregularity to avoid a plastic surface.
     float fiber = hash31(floor(vLocalPosition * 18.0 + vec3(0.0, uTime * 0.16, 0.0)));
     float featherLight = smoothstep(0.24, 0.92, abs(vLocalPosition.x) / 4.4);
-    vec3 underColor = mix(vec3(0.13, 0.34, 0.29), vec3(0.78, 1.0, 0.86), featherLight);
-    vec3 topColor = vColor * (0.30 + diffuse * 0.88) + vec3(0.12, 0.34, 0.26) * backLight;
-    vec3 color = mix(topColor, underColor * (0.52 + diffuse * 0.54), uUnderView);
-    color += vec3(0.08, 0.22, 0.16) * (rim + backLight * 0.35);
-    color += (fiber - 0.5) * vec3(0.025, 0.050, 0.038);
+    float barbs = 0.5 + 0.5 * sin(vLocalPosition.z * 15.0 - abs(vLocalPosition.x) * 2.4);
+    float shaftShade = 0.84 + 0.16 * barbs;
+    // The underside stays luminous enough for the optic, but retains grey-green layers,
+    // shafts, and darker feather roots instead of resolving as a solid white icon.
+    vec3 underBase = mix(vec3(0.10, 0.22, 0.19), vec3(0.59, 0.76, 0.66), featherLight);
+    vec3 underColor = mix(underBase, vColor * vec3(0.72, 0.84, 0.78), 0.42) * shaftShade;
+    vec3 topColor = vColor * (0.24 + diffuse * 0.70) + vec3(0.08, 0.23, 0.18) * backLight;
+    vec3 color = mix(topColor, underColor * (0.46 + diffuse * 0.50), uUnderView);
+    color += vec3(0.045, 0.13, 0.10) * (rim + backLight * 0.30);
+    color += (fiber - 0.5) * vec3(0.020, 0.040, 0.030);
     color = mix(color, vec3(0.90, 0.07, 0.018), clamp(uDisruption * 0.88, 0.0, 1.0));
 
     float distanceToCamera = length(uCameraPosition - vWorldPosition);
@@ -312,7 +317,7 @@ void main() {
     blur += sampleScene(vUv + texel * vec2(1.0, 1.0));
     blur /= 6.0;
     vec3 bloom = max(blur - vec3(0.09), vec3(0.0));
-    color += bloom * 0.72;
+    color += bloom * 0.38;
 
     float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
     color = mix(vec3(luminance) * vec3(0.58, 0.95, 0.86), color, 0.52);
@@ -320,7 +325,7 @@ void main() {
     color = pow(max(color, vec3(0.0)), vec3(1.0 / 1.85));
 
     float grain = hash21(gl_FragCoord.xy + vec2(uTime * 71.0, uTime * 19.0)) - 0.5;
-    color += grain * 0.070;
+    color += grain * 0.035;
     float vignette = smoothstep(0.76, 0.12, radius * 1.72);
     color *= mix(0.42, 1.0, vignette);
     outColor = vec4(max(color, vec3(0.0)), 1.0);

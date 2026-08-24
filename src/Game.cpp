@@ -109,12 +109,25 @@ void appendFeather(std::vector<Vertex>& vertices, const Vec3& root, const Vec3& 
 
     appendQuad(vertices, rootLeft, rootRight, bendRight, bendLeft, color);
     appendQuad(vertices, bendLeft, bendRight, tipRight, tipLeft, color);
+
+    // A recessed quill gives the procedurally generated blade a real underside ridge.
+    // It remains geometry, not a painted line or texture.
+    const float shaftWidth = std::max(width * 0.13F, 0.012F);
+    const Vec3 shaftOffset{0.0F, -std::min(width * 0.38F, 0.070F), 0.0F};
+    const Vec3 shaftRootLeft = root - lateral * shaftWidth + shaftOffset;
+    const Vec3 shaftRootRight = root + lateral * shaftWidth + shaftOffset;
+    const Vec3 shaftBendLeft = bend - lateral * (shaftWidth * 0.72F) + shaftOffset;
+    const Vec3 shaftBendRight = bend + lateral * (shaftWidth * 0.72F) + shaftOffset;
+    const Vec3 shaftTipLeft = tip - lateral * (shaftWidth * 0.18F) + shaftOffset;
+    const Vec3 shaftTipRight = tip + lateral * (shaftWidth * 0.18F) + shaftOffset;
+    appendQuad(vertices, shaftRootLeft, shaftRootRight, shaftBendRight, shaftBendLeft, color * 0.46F);
+    appendQuad(vertices, shaftBendLeft, shaftBendRight, shaftTipRight, shaftTipLeft, color * 0.46F);
 }
 
 Mesh makeSignalBodyMesh() {
     std::vector<Vertex> vertices;
-    appendEllipsoid(vertices, {0.0F, 0.0F, 0.0F}, {0.48F, 0.38F, 1.18F}, 16, 22, {0.54F, 0.72F, 0.65F});
-    appendEllipsoid(vertices, {0.0F, 0.14F, -0.98F}, {0.29F, 0.26F, 0.31F}, 12, 18, {0.66F, 0.82F, 0.73F});
+    appendEllipsoid(vertices, {0.0F, 0.0F, 0.0F}, {0.48F, 0.38F, 1.18F}, 22, 30, {0.54F, 0.72F, 0.65F});
+    appendEllipsoid(vertices, {0.0F, 0.14F, -0.98F}, {0.29F, 0.26F, 0.31F}, 16, 24, {0.66F, 0.82F, 0.73F});
 
     // Tail fan: individual feathers break the otherwise smooth body silhouette.
     for (int feather = -4; feather <= 4; ++feather) {
@@ -139,10 +152,11 @@ Mesh makeSignalWingMesh(float side) {
     for (int feather = 0; feather < featherCount; ++feather) {
         const float fraction = static_cast<float>(feather) / static_cast<float>(featherCount - 1);
         const float stagger = std::sin(fraction * kPi) * 0.18F;
-        const Vec3 root{side * (0.18F + fraction * 0.28F), 0.02F - fraction * 0.045F, -0.06F + fraction * 0.34F};
-        const Vec3 bend{side * (1.00F + fraction * 1.08F), 0.05F + fraction * 0.18F, 0.05F + fraction * 0.62F};
-        const Vec3 tip{side * (2.15F + fraction * 2.15F), 0.11F + fraction * 0.42F + stagger, 0.22F + fraction * 1.06F};
-        const float width = 0.20F * (1.0F - fraction) + 0.045F * fraction;
+        const Vec3 root{side * (0.18F + fraction * 0.28F), 0.03F + fraction * 0.015F, -0.06F + fraction * 0.34F};
+        const Vec3 bend{side * (1.00F + fraction * 1.08F), 0.18F + fraction * 0.52F, 0.05F + fraction * 0.62F};
+        // A lifted primary fan gives the upward view a deep, articulated wing silhouette.
+        const Vec3 tip{side * (2.15F + fraction * 2.15F), 0.36F + fraction * 1.12F + stagger, 0.22F + fraction * 1.06F};
+        const float width = 0.23F * (1.0F - fraction) + 0.075F * fraction;
         const Vec3 color = lerp(Vec3{0.22F, 0.42F, 0.37F}, Vec3{0.72F, 0.92F, 0.80F}, fraction * 0.72F);
         appendFeather(vertices, root, bend, tip, width, color);
     }
@@ -151,10 +165,10 @@ Mesh makeSignalWingMesh(float side) {
     for (int covert = 0; covert < 9; ++covert) {
         const float fraction = static_cast<float>(covert) / 8.0F;
         appendFeather(vertices,
-                      {side * 0.12F, 0.05F, -0.04F + fraction * 0.25F},
-                      {side * (0.58F + fraction * 0.44F), 0.09F, 0.05F + fraction * 0.36F},
-                      {side * (1.32F + fraction * 0.65F), 0.14F, 0.18F + fraction * 0.54F},
-                      0.16F * (1.0F - fraction) + 0.06F * fraction,
+                      {side * 0.12F, 0.06F, -0.04F + fraction * 0.25F},
+                      {side * (0.58F + fraction * 0.44F), 0.16F + fraction * 0.20F, 0.05F + fraction * 0.36F},
+                      {side * (1.32F + fraction * 0.65F), 0.27F + fraction * 0.42F, 0.18F + fraction * 0.54F},
+                      0.18F * (1.0F - fraction) + 0.070F * fraction,
                       {0.36F, 0.58F, 0.50F});
     }
     return Mesh(vertices);
@@ -270,7 +284,7 @@ void Game::render(int framebufferWidth, int framebufferHeight) {
     glEnable(GL_DEPTH_TEST);
 
     const float aspectRatio = static_cast<float>(framebufferWidth) / static_cast<float>(framebufferHeight);
-    const float fieldOfView = radians(20.0F / zoom_);
+    const float fieldOfView = radians(18.0F / zoom_);
     const Mat4 projection = Mat4::perspective(fieldOfView, aspectRatio, 0.20F, 2200.0F);
     const Vec3 forward = cameraForward();
     const Vec3 renderCamera = cameraPosition_ - forward * (recoil_ * 0.10F);
@@ -554,16 +568,17 @@ void Game::updateAngels(float deltaSeconds) {
     }
     if (!subjectInFrame && focalClock_ <= 0.0F) {
         if (angels_.size() < kMaximumAngels) {
-            spawnAngel(true);
-        } else {
-            auto candidate = std::find_if(angels_.begin(), angels_.end(), [](const Angel& angel) {
-                return angel.disruption <= 0.0F;
+            Angel focal{};
+            stageFocalAngel(focal);
+            angels_.push_back(std::move(focal));
+        } else if (!angels_.empty()) {
+            // Reuse the most distant signal so a nearby readable one is never traded away.
+            const auto candidate = std::max_element(angels_.begin(), angels_.end(), [this](const Angel& left, const Angel& right) {
+                return lengthSquared(left.position - cameraPosition_) < lengthSquared(right.position - cameraPosition_);
             });
-            if (candidate != angels_.end()) {
-                resetAngel(*candidate, true);
-            }
+            stageFocalAngel(*candidate);
         }
-        focalClock_ = 3.5F;
+        focalClock_ = 1.25F;
     }
 }
 
@@ -634,6 +649,38 @@ void Game::resetAngel(Angel& angel, bool immediatelyVisible) {
     angel.position.y = angel.baseAltitude + std::sin(angel.phase) * angel.waveAmplitude;
 
     constexpr int trailSamples = 22;
+    angel.trail.reserve(trailSamples + 8);
+    for (int sample = 0; sample < trailSamples; ++sample) {
+        const float secondsBehind = static_cast<float>(trailSamples - sample) * 0.050F;
+        angel.trail.push_back(angel.position - angel.velocity * secondsBehind);
+    }
+}
+
+void Game::stageFocalAngel(Angel& angel) {
+    resetAngel(angel, true);
+
+    // This is deliberately a close, inspectable signal rather than a distant dot.
+    // Its full 3D feather structure occupies the optic while it still moves enough
+    // for lead and shell drop to matter.
+    constexpr float focalDistance = 155.0F;
+    constexpr float focalScale = 3.35F;
+    const Vec3 viewDirection = cameraForward();
+    const Vec3 flatViewDirection = normalise({viewDirection.x, 0.0F, viewDirection.z});
+    const float groundSpeed = length(Vec3{angel.velocity.x, 0.0F, angel.velocity.z});
+    const float viewPitch = radians(pitchDegrees_);
+
+    angel.heading = flatViewDirection;
+    angel.side = normalise(cross(flatViewDirection, kUp));
+    angel.velocity = viewDirection * (groundSpeed / std::max(std::cos(viewPitch), 0.10F));
+    angel.position = cameraPosition_ + viewDirection * focalDistance;
+    angel.scale = focalScale;
+    angel.waveAmplitude = 0.22F;
+    angel.waveFrequency = 0.36F;
+    // Keep the first physics update continuous with the ray-centred opening frame.
+    angel.baseAltitude = angel.position.y - std::sin(angel.phase) * angel.waveAmplitude;
+
+    constexpr int trailSamples = 22;
+    angel.trail.clear();
     angel.trail.reserve(trailSamples + 8);
     for (int sample = 0; sample < trailSamples; ++sample) {
         const float secondsBehind = static_cast<float>(trailSamples - sample) * 0.050F;
@@ -722,24 +769,13 @@ void Game::resetEncounter() {
     spawnClock_ = 1.6F;
     focalClock_ = 0.0F;
 
-    for (int index = 0; index < 3; ++index) {
-        spawnAngel(true);
-    }
+    Angel focal{};
+    stageFocalAngel(focal);
+    angels_.push_back(std::move(focal));
 
-    // The first signal always begins inside the narrow optic's usable field.
-    if (!angels_.empty()) {
-        Angel& guide = angels_.front();
-        const Vec3 viewDirection = cameraForward();
-        const float guideGroundSpeed = length(Vec3{guide.velocity.x, 0.0F, guide.velocity.z});
-        const float viewPitch = radians(pitchDegrees_);
-        guide.velocity = viewDirection * (guideGroundSpeed / std::max(std::cos(viewPitch), 0.10F));
-        guide.position = cameraPosition_ + viewDirection * 285.0F;
-        guide.baseAltitude = guide.position.y;
-        guide.waveAmplitude = 0.32F;
-        guide.trail.clear();
-        for (int sample = 0; sample < 22; ++sample) {
-            guide.trail.push_back(guide.position - guide.velocity * (static_cast<float>(22 - sample) * 0.05F));
-        }
+    // Supporting signals retain the wider, behind-the-player arrival pattern.
+    for (int index = 0; index < 2; ++index) {
+        spawnAngel(false);
     }
     acquireLock();
 }

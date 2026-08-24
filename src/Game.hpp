@@ -137,6 +137,7 @@ private:
     void updateProjectiles(float deltaSeconds);
     void spawnAngel(bool immediatelyVisible);
     void resetAngel(Angel& angel, bool immediatelyVisible);
+    void stageFocalAngel(Angel& angel);
     void fire();
     void acquireLock();
     void resetEncounter();
