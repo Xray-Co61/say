@@ -97,10 +97,11 @@ private:
 
     Vec3 cameraPosition_{};
     float yawDegrees_ = -90.0F;
-    float pitchDegrees_ = 11.0F;
+    float pitchDegrees_ = 13.0F;
     float zoom_ = 1.0F;
     float elapsedSeconds_ = 0.0F;
     float spawnClock_ = 0.0F;
+    float focalClock_ = 0.0F;
     float fireCooldown_ = 0.0F;
     float recoil_ = 0.0F;
     float titleClock_ = 0.0F;

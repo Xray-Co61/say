@@ -30,7 +30,14 @@ int main() {
 #endif
     glfwWindowHint(GLFW_SAMPLES, 4);
 
-    GLFWwindow* window = glfwCreateWindow(1600, 900, "FALLEN SIGNAL", nullptr, nullptr);
+    // A sight mounted inside a vehicle should occupy the whole display, not appear
+    // as a desktop utility with a title bar and taskbar around the optic.
+    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+    const GLFWvidmode* videoMode = monitor == nullptr ? nullptr : glfwGetVideoMode(monitor);
+    GLFWwindow* window = glfwCreateWindow(
+        videoMode == nullptr ? 1600 : videoMode->width,
+        videoMode == nullptr ? 900 : videoMode->height,
+        "FALLEN SIGNAL", monitor, nullptr);
     if (window == nullptr) {
         std::fprintf(stderr, "Could not create an OpenGL 3.3 window. Update the GPU driver and try again.\n");
         glfwTerminate();

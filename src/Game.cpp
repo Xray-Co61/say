@@ -179,7 +179,7 @@ void Game::initialise() {
     worldShader_ = Shader(shaders::worldVertex, shaders::worldFragment, "world");
     skyShader_ = Shader(shaders::skyVertex, shaders::skyFragment, "sky");
     birdShader_ = Shader(shaders::birdVertex, shaders::birdFragment, "procedural bird");
-    projectileShader_ = Shader(shaders::angelVertex, shaders::projectileFragment, "red shell");
+    projectileShader_ = Shader(shaders::billboardVertex, shaders::projectileFragment, "red shell");
     postShader_ = Shader(shaders::postVertex, shaders::postFragment, "cinematic post");
     hudShader_ = Shader(shaders::hudVertex, shaders::hudFragment, "optic hud");
 
@@ -496,6 +496,7 @@ void Game::updateAim(float deltaSeconds) {
 }
 
 void Game::updateAngels(float deltaSeconds) {
+    focalClock_ = std::max(0.0F, focalClock_ - deltaSeconds);
     spawnClock_ -= deltaSeconds;
     if (spawnClock_ <= 0.0F && angels_.size() < kMaximumAngels) {
         spawnAngel(false);
@@ -509,6 +510,9 @@ void Game::updateAngels(float deltaSeconds) {
             angel.position.y -= deltaSeconds * 3.5F;
         } else {
             angel.age += deltaSeconds;
+            // Preserve each flight corridor's elevation while the signal travels; this also
+            // gives fire-control the true three-dimensional target velocity.
+            angel.baseAltitude += angel.velocity.y * deltaSeconds;
             angel.position += angel.velocity * deltaSeconds;
             angel.position.y = angel.baseAltitude + std::sin(angel.age * angel.waveFrequency + angel.phase) * angel.waveAmplitude;
         }
@@ -532,6 +536,34 @@ void Game::updateAngels(float deltaSeconds) {
         if (angel.disruption <= 0.0F && angel.age > 25.0F) {
             resetAngel(angel, false);
         }
+    }
+
+    // Keep a single readable subject in the narrow optic; the rest may still approach from behind.
+    bool subjectInFrame = false;
+    const Vec3 viewDirection = cameraForward();
+    for (const Angel& angel : angels_) {
+        if (angel.disruption > 0.0F) {
+            continue;
+        }
+        const Vec3 offset = angel.position - cameraPosition_;
+        const float distance = length(offset);
+        if (distance > 1.0F && distance < 560.0F && dot(offset / distance, viewDirection) > std::cos(radians(10.5F))) {
+            subjectInFrame = true;
+            break;
+        }
+    }
+    if (!subjectInFrame && focalClock_ <= 0.0F) {
+        if (angels_.size() < kMaximumAngels) {
+            spawnAngel(true);
+        } else {
+            auto candidate = std::find_if(angels_.begin(), angels_.end(), [](const Angel& angel) {
+                return angel.disruption <= 0.0F;
+            });
+            if (candidate != angels_.end()) {
+                resetAngel(*candidate, true);
+            }
+        }
+        focalClock_ = 3.5F;
     }
 }
 
@@ -582,18 +614,22 @@ void Game::resetAngel(Angel& angel, bool immediatelyVisible) {
     angel.heading = flatForward;
     angel.side = right;
     angel.velocity = flatForward * speed + right * randomRange(-3.0F, 3.0F);
-    angel.scale = randomRange(1.55F, 3.45F);
-    angel.waveAmplitude = randomRange(0.25F, 2.0F);
-    angel.waveFrequency = randomRange(0.24F, 0.68F);
+    angel.scale = randomRange(2.00F, 3.55F);
+    angel.waveAmplitude = randomRange(0.18F, 1.25F);
+    angel.waveFrequency = randomRange(0.20F, 0.52F);
     angel.phase = randomRange(0.0F, 2.0F * kPi);
-    // The optic is below the flight path: every signal crosses above the player.
-    angel.baseAltitude = cameraPosition_.y + randomRange(48.0F, 86.0F);
+
+    const float distance = immediatelyVisible ? randomRange(215.0F, 390.0F) : randomRange(175.0F, 420.0F);
+    const float elevationDegrees = immediatelyVisible ? randomRange(7.0F, 18.0F) : randomRange(8.0F, 21.0F);
+    // The camera is physically below the flight line, but the director keeps the signal in the optic's narrow cone.
+    angel.baseAltitude = cameraPosition_.y + std::tan(radians(elevationDegrees)) * distance;
+    const float groundSpeed = length(Vec3{angel.velocity.x, 0.0F, angel.velocity.z});
+    angel.velocity += kUp * (std::tan(radians(elevationDegrees)) * groundSpeed);
 
     if (immediatelyVisible) {
-        const float distance = randomRange(230.0F, 460.0F);
-        angel.position = cameraPosition_ + flatForward * distance + right * randomRange(-distance * 0.070F, distance * 0.070F);
+        angel.position = cameraPosition_ + flatForward * distance + right * randomRange(-distance * 0.040F, distance * 0.040F);
     } else {
-        angel.position = cameraPosition_ - flatForward * randomRange(190.0F, 510.0F) + right * randomRange(-54.0F, 54.0F);
+        angel.position = cameraPosition_ - flatForward * distance + right * randomRange(-46.0F, 46.0F);
     }
     angel.position.y = angel.baseAltitude + std::sin(angel.phase) * angel.waveAmplitude;
 
@@ -676,7 +712,7 @@ void Game::acquireLock() {
 void Game::resetEncounter() {
     cameraPosition_ = {0.0F, terrainHeight(0.0F, 0.0F) + 3.0F, 0.0F};
     yawDegrees_ = -90.0F;
-    pitchDegrees_ = 11.0F;
+    pitchDegrees_ = 13.0F;
     zoom_ = 1.0F;
     projectiles_.clear();
     angels_.clear();
@@ -684,6 +720,7 @@ void Game::resetEncounter() {
     fireCooldown_ = 0.0F;
     recoil_ = 0.0F;
     spawnClock_ = 1.6F;
+    focalClock_ = 0.0F;
 
     for (int index = 0; index < 3; ++index) {
         spawnAngel(true);
@@ -692,11 +729,13 @@ void Game::resetEncounter() {
     // The first signal always begins inside the narrow optic's usable field.
     if (!angels_.empty()) {
         Angel& guide = angels_.front();
-        const Vec3 forward = normalise({cameraForward().x, 0.0F, cameraForward().z});
-        guide.position = cameraPosition_ + forward * 290.0F;
-        guide.baseAltitude = cameraPosition_.y + 66.0F;
-        guide.position.y = guide.baseAltitude;
-        guide.waveAmplitude = 0.45F;
+        const Vec3 viewDirection = cameraForward();
+        const float guideGroundSpeed = length(Vec3{guide.velocity.x, 0.0F, guide.velocity.z});
+        const float viewPitch = radians(pitchDegrees_);
+        guide.velocity = viewDirection * (guideGroundSpeed / std::max(std::cos(viewPitch), 0.10F));
+        guide.position = cameraPosition_ + viewDirection * 285.0F;
+        guide.baseAltitude = guide.position.y;
+        guide.waveAmplitude = 0.32F;
         guide.trail.clear();
         for (int sample = 0; sample < 22; ++sample) {
             guide.trail.push_back(guide.position - guide.velocity * (static_cast<float>(22 - sample) * 0.05F));

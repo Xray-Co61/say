@@ -188,21 +188,21 @@ void main() {
     // Fine per-feather variation without a texture: enough irregularity to avoid a plastic surface.
     float fiber = hash31(floor(vLocalPosition * 18.0 + vec3(0.0, uTime * 0.16, 0.0)));
     float featherLight = smoothstep(0.24, 0.92, abs(vLocalPosition.x) / 4.4);
-    vec3 underColor = mix(vec3(0.075, 0.20, 0.17), vec3(0.56, 0.82, 0.70), featherLight);
-    vec3 topColor = vColor * (0.18 + diffuse * 0.74) + vec3(0.05, 0.17, 0.13) * backLight;
-    vec3 color = mix(topColor, underColor * (0.35 + diffuse * 0.45), uUnderView);
-    color += vec3(0.015, 0.055, 0.042) * rim;
+    vec3 underColor = mix(vec3(0.13, 0.34, 0.29), vec3(0.78, 1.0, 0.86), featherLight);
+    vec3 topColor = vColor * (0.30 + diffuse * 0.88) + vec3(0.12, 0.34, 0.26) * backLight;
+    vec3 color = mix(topColor, underColor * (0.52 + diffuse * 0.54), uUnderView);
+    color += vec3(0.08, 0.22, 0.16) * (rim + backLight * 0.35);
     color += (fiber - 0.5) * vec3(0.025, 0.050, 0.038);
     color = mix(color, vec3(0.90, 0.07, 0.018), clamp(uDisruption * 0.88, 0.0, 1.0));
 
     float distanceToCamera = length(uCameraPosition - vWorldPosition);
-    float fog = 1.0 - exp(-distanceToCamera * 0.0027);
+    float fog = 1.0 - exp(-distanceToCamera * 0.00135);
     color = mix(color, uFogColor, clamp(fog, 0.0, 0.92));
     outColor = vec4(max(color, vec3(0.0)), 1.0);
 }
 )GLSL";
 
-inline constexpr char angelVertex[] = R"GLSL(
+inline constexpr char billboardVertex[] = R"GLSL(
 #version 330 core
 layout (location = 0) in vec3 aPosition;
 
@@ -222,84 +222,6 @@ void main() {
         + uCameraUp * corner.y * uScale * 1.65;
     vUv = vec2(corner.x * 0.5 + 0.5, 1.0 - (corner.y * 0.5 + 0.5));
     gl_Position = uProjection * uView * vec4(worldPosition, 1.0);
-}
-)GLSL";
-
-inline constexpr char angelFragment[] = R"GLSL(
-#version 330 core
-in vec2 vUv;
-
-uniform vec3 uFogColor;
-uniform float uDistance;
-uniform float uDisruption;
-uniform float uTime;
-uniform float uSeed;
-uniform float uBelowAngle;
-
-out vec4 outColor;
-
-float hash21(vec2 value) {
-    value = fract(value * vec2(123.34, 456.21));
-    value += dot(value, value + 45.32);
-    return fract(value.x * value.y);
-}
-
-float segmentMask(vec2 point, vec2 start, vec2 end, float radius) {
-    vec2 segment = end - start;
-    float projection = clamp(dot(point - start, segment) / max(dot(segment, segment), 0.0001), 0.0, 1.0);
-    float distanceToSegment = length(point - (start + segment * projection));
-    return 1.0 - smoothstep(radius * 0.42, radius, distanceToSegment);
-}
-
-float ellipseMask(vec2 point, vec2 center, vec2 radii) {
-    return 1.0 - smoothstep(0.78, 1.0, length((point - center) / radii));
-}
-
-void main() {
-    // The signal is deliberately procedural: distant feather-like light, not a pasted image.
-    vec2 point = vUv * 2.0 - 1.0;
-    point.x *= 0.92;
-    // Looking upward from below compresses the body and opens the wings into a broad underwing shape.
-    point.y = mix(point.y, point.y * 0.72 + 0.08, uBelowAngle);
-    float flap = sin(uTime * 2.4 + uSeed) * 0.075;
-
-    float body = ellipseMask(point, vec2(0.0, 0.13), vec2(0.135, 0.25));
-    float head = ellipseMask(point, vec2(0.0, -0.17), vec2(0.080, 0.070));
-    float tail = segmentMask(point, vec2(0.0, 0.27), vec2(0.0, 0.68), 0.14);
-    float wings = 0.0;
-
-    for (int sideIndex = 0; sideIndex < 2; ++sideIndex) {
-        float side = sideIndex == 0 ? -1.0 : 1.0;
-        vec2 root = vec2(side * 0.045, 0.01);
-        for (int featherIndex = 0; featherIndex < 10; ++featherIndex) {
-            float fraction = float(featherIndex) / 9.0;
-            float frontArc = -0.38 - fraction * 0.52;
-            float underArc = -0.13 - fraction * 0.39;
-            float arc = mix(frontArc, underArc, uBelowAngle) + flap * (0.25 + fraction * 0.55);
-            vec2 tip = vec2(side * (0.25 + fraction * 0.79), arc);
-            float width = mix(0.155, 0.042, fraction);
-            wings = max(wings, segmentMask(point, root, tip, width));
-        }
-        // Translucent wing membrane makes individual feather lines read as a single distant silhouette.
-        wings = max(wings, ellipseMask(point, vec2(side * 0.36, mix(-0.18, -0.05, uBelowAngle) + flap * 0.3), vec2(0.50, mix(0.38, 0.28, uBelowAngle))) * 0.42);
-    }
-
-    float signal = max(max(body, head), max(tail, wings));
-    float particulate = hash21(floor(point * 115.0) + floor(uTime * 19.0) + uSeed);
-    signal *= smoothstep(0.08, 0.95, particulate + signal * 0.42);
-
-    float atmosphericFade = exp(-uDistance * 0.00058);
-    float alpha = signal * mix(0.22, 0.92, atmosphericFade);
-    float core = max(body, head);
-    float featherTip = smoothstep(0.12, 0.94, abs(point.x));
-    vec3 underWing = mix(vec3(0.045, 0.16, 0.14), vec3(0.60, 0.88, 0.76), featherTip);
-    vec3 normalWing = mix(vec3(0.20, 0.54, 0.48), vec3(0.92, 1.0, 0.90), core * 0.92 + wings * 0.35);
-    vec3 color = mix(normalWing, underWing + vec3(core * 0.24), uBelowAngle * wings);
-    color = mix(color, vec3(0.82, 0.075, 0.018), clamp(uDisruption * 0.86, 0.0, 1.0));
-
-    float fog = 1.0 - exp(-uDistance * 0.0011);
-    color = mix(color, uFogColor, fog * 0.45);
-    outColor = vec4(color, alpha);
 }
 )GLSL";
 
