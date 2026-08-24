@@ -31,6 +31,7 @@ private:
         Vec3 velocity{};
         Vec3 heading{};
         Vec3 side{};
+        Vec3 focalAnchor{};
         std::vector<Vec3> trail;
         float scale = 1.0F;
         float baseAltitude = 0.0F;
@@ -40,6 +41,7 @@ private:
         float age = 0.0F;
         float disruption = 0.0F;
         float trailClock = 0.0F;
+        bool focal = false;
     };
 
     struct Projectile {

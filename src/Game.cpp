@@ -522,6 +522,30 @@ void Game::updateAngels(float deltaSeconds) {
             angel.disruption -= deltaSeconds;
             angel.position += angel.velocity * (deltaSeconds * 0.18F);
             angel.position.y -= deltaSeconds * 3.5F;
+            if (angel.disruption <= 0.0F) {
+                // A resolved signal leaves the corridor instead of silently becoming normal again.
+                resetAngel(angel, false);
+                continue;
+            }
+        } else if (angel.focal) {
+            angel.age += deltaSeconds;
+            // A close signal circles through a small air lane instead of receding down the
+            // optic. It retains physical, non-zero velocity for projectile lead, but remains
+            // inspectable long enough for the dense 3D feather work to read.
+            constexpr float glideRate = 0.72F;
+            constexpr float lateralRadius = 7.0F;
+            constexpr float depthRadius = 3.0F;
+            constexpr float verticalRadius = 1.10F;
+            const float glide = angel.age * glideRate;
+            const float lateral = std::sin(glide) * lateralRadius;
+            const float depth = (std::cos(glide * 0.68F) - 1.0F) * depthRadius;
+            const float vertical = std::sin(glide * 1.32F) * verticalRadius;
+
+            angel.position = angel.focalAnchor + angel.side * lateral + angel.heading * depth;
+            angel.position.y = angel.baseAltitude + vertical;
+            angel.velocity = angel.side * (std::cos(glide) * lateralRadius * glideRate)
+                + angel.heading * (-std::sin(glide * 0.68F) * depthRadius * glideRate * 0.68F)
+                + kUp * (std::cos(glide * 1.32F) * verticalRadius * glideRate * 1.32F);
         } else {
             angel.age += deltaSeconds;
             // Preserve each flight corridor's elevation while the signal travels; this also
@@ -540,15 +564,16 @@ void Game::updateAngels(float deltaSeconds) {
             }
         }
 
-        const Vec3 relativePosition = angel.position - cameraPosition_;
-        if (angel.disruption <= 0.0F && (dot(relativePosition, angel.heading) > 940.0F || length(relativePosition) > 1350.0F)) {
-            resetAngel(angel, false);
+        if (angel.focal && angel.age > 14.0F) {
+            stageFocalAngel(angel);
+            continue;
         }
-        if (angel.disruption <= 0.0F && angel.position.y < -80.0F) {
-            resetAngel(angel, false);
-        }
-        if (angel.disruption <= 0.0F && angel.age > 25.0F) {
-            resetAngel(angel, false);
+        if (!angel.focal) {
+            const Vec3 relativePosition = angel.position - cameraPosition_;
+            if (dot(relativePosition, angel.heading) > 940.0F || length(relativePosition) > 1350.0F
+                || angel.position.y < -80.0F || angel.age > 25.0F) {
+                resetAngel(angel, false);
+            }
         }
     }
 
@@ -567,12 +592,17 @@ void Game::updateAngels(float deltaSeconds) {
         }
     }
     if (!subjectInFrame && focalClock_ <= 0.0F) {
-        if (angels_.size() < kMaximumAngels) {
+        const auto existingFocal = std::find_if(angels_.begin(), angels_.end(), [](const Angel& angel) {
+            return angel.focal && angel.disruption <= 0.0F;
+        });
+        if (existingFocal != angels_.end()) {
+            stageFocalAngel(*existingFocal);
+        } else if (angels_.size() < kMaximumAngels) {
             Angel focal{};
             stageFocalAngel(focal);
             angels_.push_back(std::move(focal));
         } else if (!angels_.empty()) {
-            // Reuse the most distant signal so a nearby readable one is never traded away.
+            // Reuse the most distant background signal so a nearby readable one is never traded away.
             const auto candidate = std::max_element(angels_.begin(), angels_.end(), [this](const Angel& left, const Angel& right) {
                 return lengthSquared(left.position - cameraPosition_) < lengthSquared(right.position - cameraPosition_);
             });
@@ -599,6 +629,9 @@ void Game::updateProjectiles(float deltaSeconds) {
             }
             if (projectileHitsAngel(projectile, angel)) {
                 angel.disruption = 1.15F;
+                if (angel.focal) {
+                    focalClock_ = 1.15F;
+                }
                 angel.trail.clear();
                 angel.trail.push_back(angel.position);
                 ++signalsResolved_;
@@ -644,7 +677,11 @@ void Game::resetAngel(Angel& angel, bool immediatelyVisible) {
     if (immediatelyVisible) {
         angel.position = cameraPosition_ + flatForward * distance + right * randomRange(-distance * 0.040F, distance * 0.040F);
     } else {
-        angel.position = cameraPosition_ - flatForward * distance + right * randomRange(-46.0F, 46.0F);
+        // Background traffic comes from behind through side lanes so it never stacks into
+        // a row of ghost silhouettes over the close staged signal.
+        const float laneSign = randomRange(0.0F, 1.0F) < 0.5F ? -1.0F : 1.0F;
+        const float laneOffset = laneSign * randomRange(62.0F, 148.0F);
+        angel.position = cameraPosition_ - flatForward * distance + right * laneOffset;
     }
     angel.position.y = angel.baseAltitude + std::sin(angel.phase) * angel.waveAmplitude;
 
@@ -659,25 +696,29 @@ void Game::resetAngel(Angel& angel, bool immediatelyVisible) {
 void Game::stageFocalAngel(Angel& angel) {
     resetAngel(angel, true);
 
-    // This is deliberately a close, inspectable signal rather than a distant dot.
-    // Its full 3D feather structure occupies the optic while it still moves enough
-    // for lead and shell drop to matter.
-    constexpr float focalDistance = 155.0F;
-    constexpr float focalScale = 3.35F;
+    // The hero signal is close enough to inspect, and glides across a compact air lane
+    // rather than shrinking into the haze a few seconds after the encounter begins.
+    constexpr float focalDistance = 150.0F;
+    constexpr float focalScale = 4.00F;
+    constexpr float glideRate = 0.72F;
+    constexpr float lateralRadius = 7.0F;
+    constexpr float verticalRadius = 1.10F;
     const Vec3 viewDirection = cameraForward();
     const Vec3 flatViewDirection = normalise({viewDirection.x, 0.0F, viewDirection.z});
-    const float groundSpeed = length(Vec3{angel.velocity.x, 0.0F, angel.velocity.z});
-    const float viewPitch = radians(pitchDegrees_);
 
+    angel.focal = true;
+    angel.age = 0.0F;
+    angel.phase = 0.0F;
     angel.heading = flatViewDirection;
     angel.side = normalise(cross(flatViewDirection, kUp));
-    angel.velocity = viewDirection * (groundSpeed / std::max(std::cos(viewPitch), 0.10F));
-    angel.position = cameraPosition_ + viewDirection * focalDistance;
+    angel.focalAnchor = cameraPosition_ + viewDirection * focalDistance;
+    angel.position = angel.focalAnchor;
     angel.scale = focalScale;
-    angel.waveAmplitude = 0.22F;
-    angel.waveFrequency = 0.36F;
-    // Keep the first physics update continuous with the ray-centred opening frame.
-    angel.baseAltitude = angel.position.y - std::sin(angel.phase) * angel.waveAmplitude;
+    angel.baseAltitude = angel.focalAnchor.y;
+    angel.waveAmplitude = verticalRadius;
+    angel.waveFrequency = glideRate;
+    angel.velocity = angel.side * (lateralRadius * glideRate)
+        + kUp * (verticalRadius * glideRate * 1.32F);
 
     constexpr int trailSamples = 22;
     angel.trail.clear();
@@ -766,17 +807,12 @@ void Game::resetEncounter() {
     signalsResolved_ = 0;
     fireCooldown_ = 0.0F;
     recoil_ = 0.0F;
-    spawnClock_ = 1.6F;
+    spawnClock_ = 2.2F;
     focalClock_ = 0.0F;
 
     Angel focal{};
     stageFocalAngel(focal);
     angels_.push_back(std::move(focal));
-
-    // Supporting signals retain the wider, behind-the-player arrival pattern.
-    for (int index = 0; index < 2; ++index) {
-        spawnAngel(false);
-    }
     acquireLock();
 }
 
@@ -877,7 +913,9 @@ void Game::renderAngel(const Angel& angel, const Mat4& view, const Mat4& project
 void Game::renderTrails(const Mat4& view, const Mat4& projection) {
     std::vector<Vertex> vertices;
     for (const Angel& angel : angels_) {
-        if (angel.trail.size() < 2) {
+        // Keep the close signal clean: trails belong to distant corridor traffic, not a
+        // stack of semi-transparent wing-shaped ghosts over the inspectable subject.
+        if (angel.focal || angel.trail.size() < 2) {
             continue;
         }
         for (std::size_t index = 1; index < angel.trail.size(); ++index) {
@@ -963,9 +1001,9 @@ void Game::renderHud() {
     std::vector<HudVertex> vertices;
     vertices.reserve(420);
 
-    const HudColor graphite{0.002F, 0.012F, 0.010F, 0.84F};
-    const HudColor fadedInk{0.014F, 0.060F, 0.052F, 0.43F};
-    const HudColor red{0.82F, 0.085F, 0.022F, 0.92F};
+    const HudColor graphite{0.004F, 0.021F, 0.018F, 0.76F};
+    const HudColor fadedInk{0.020F, 0.085F, 0.072F, 0.50F};
+    const HudColor red{0.86F, 0.070F, 0.018F, 0.92F};
     const HudColor cueColor = lockedAngel_ >= 0 ? red : fadedInk;
 
     // Optical ruler: intentionally incomplete, thin, and matte rather than a neon game HUD.
@@ -981,7 +1019,7 @@ void Game::renderHud() {
     }
 
     addHudLine(vertices, 0.0F, 0.34F, 0.0F, -0.74F, graphite);
-    addHudChevron(vertices, 0.0F, 0.285F, 0.042F, cueColor);
+    addHudChevron(vertices, 0.0F, 0.105F, 0.038F, cueColor);
     for (int marker = 0; marker < 4; ++marker) {
         addHudChevron(vertices, 0.0F, -0.03F - static_cast<float>(marker) * 0.115F, 0.035F, graphite);
     }

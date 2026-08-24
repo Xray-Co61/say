@@ -1,1 +1,1 @@
-732ba849b99b9c8d5cbfee7e7461a0004e214ec8005f4105123d75fcdc8d8c6f  FallenSignal-Windows-x64.zip
+8e84bc7895f26f5d962b5ab29e568b266afe4fa994176bc96c4b51c19b6da14c  FallenSignal-Windows-x64.zip
