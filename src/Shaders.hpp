@@ -40,17 +40,27 @@ uniform float uOpacity;
 
 out vec4 outColor;
 
+float hash21(vec2 value) {
+    value = fract(value * vec2(123.34, 456.21));
+    value += dot(value, value + 45.32);
+    return fract(value.x * value.y);
+}
+
 void main() {
     vec3 normal = normalize(vNormal);
     float diffuse = max(dot(normal, normalize(uLightDirection)), 0.0);
-    float rim = pow(1.0 - max(dot(normal, normalize(uCameraPosition - vWorldPosition)), 0.0), 2.0);
-    vec3 lit = vColor * (0.22 + diffuse * 0.78) + uEmission + rim * uEmission * 0.35;
+    float slope = 1.0 - max(normal.y, 0.0);
+    float mottling = hash21(floor(vWorldPosition.xz * 0.18)) - 0.5;
+    vec3 earth = vColor * (0.18 + diffuse * 0.54);
+    earth *= mix(1.0, 0.55, slope);
+    earth += mottling * vec3(0.008, 0.016, 0.014);
+    vec3 lit = earth + uEmission;
 
     float distanceToCamera = length(uCameraPosition - vWorldPosition);
-    float fog = 1.0 - exp(-pow(distanceToCamera * uFogDensity, 2.0));
-    vec3 color = mix(lit, uFogColor, clamp(fog, 0.0, 0.94));
-    color = pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
-    outColor = vec4(color, uOpacity);
+    float fog = 1.0 - exp(-distanceToCamera * uFogDensity);
+    fog = clamp(fog, 0.0, 0.985);
+    vec3 color = mix(lit, uFogColor, fog);
+    outColor = vec4(max(color, vec3(0.0)), uOpacity);
 }
 )GLSL";
 
@@ -77,7 +87,7 @@ float hash21(vec2 value) {
     return fract(value.x * value.y);
 }
 
-float valueNoise(vec2 value) {
+float noise(vec2 value) {
     vec2 whole = floor(value);
     vec2 fraction = fract(value);
     fraction = fraction * fraction * (3.0 - 2.0 * fraction);
@@ -86,32 +96,163 @@ float valueNoise(vec2 value) {
                fraction.y);
 }
 
+float fbm(vec2 value) {
+    float total = 0.0;
+    float amplitude = 0.5;
+    for (int octave = 0; octave < 5; ++octave) {
+        total += noise(value) * amplitude;
+        value = value * 2.04 + vec2(17.1, 9.2);
+        amplitude *= 0.5;
+    }
+    return total;
+}
+
 void main() {
-    vec3 low = vec3(0.015, 0.12, 0.15);
-    vec3 high = vec3(0.006, 0.035, 0.12);
-    float vertical = smoothstep(0.0, 0.93, vUv.y);
-    vec3 sky = mix(low, high, vertical);
+    vec2 warped = vUv;
+    warped.x += (fbm(vUv * 2.7 + vec2(uTime * 0.006, 0.0)) - 0.5) * 0.12;
+    float cloudA = fbm(vec2(warped.x * 2.1 - uTime * 0.005, warped.y * 7.2));
+    float cloudB = fbm(vec2(warped.x * 5.4 + uTime * 0.009, warped.y * 15.0));
+    float horizon = exp(-pow((vUv.y - 0.36) * 7.8, 2.0));
 
-    float horizon = exp(-pow((vUv.y - 0.31) * 13.0, 2.0));
-    float sunsetSide = smoothstep(0.27, 1.0, vUv.x);
-    sky += vec3(0.92, 0.08, 0.035) * horizon * sunsetSide * 0.78;
-    sky += vec3(0.13, 0.36, 0.5) * exp(-pow((vUv.y - 0.44) * 5.5, 2.0)) * 0.25;
+    vec3 deepWater = vec3(0.003, 0.020, 0.024);
+    vec3 murkyTeal = vec3(0.008, 0.115, 0.106);
+    vec3 sky = mix(murkyTeal, deepWater, smoothstep(0.10, 0.94, vUv.y));
+    sky += vec3(0.015, 0.080, 0.072) * horizon;
+    sky -= vec3(0.009, 0.030, 0.028) * cloudA;
+    sky += vec3(0.003, 0.018, 0.017) * (cloudB - 0.5);
 
-    float clouds = valueNoise(vec2(vUv.x * 5.0 + uTime * 0.008, vUv.y * 17.0));
-    clouds += 0.55 * valueNoise(vec2(vUv.x * 12.0 - uTime * 0.012, vUv.y * 29.0));
-    float cloudBand = smoothstep(0.12, 0.83, vUv.y) * (1.0 - smoothstep(0.6, 0.96, vUv.y));
-    sky -= vec3(0.012, 0.026, 0.045) * clouds * cloudBand;
-
-    vec2 starGrid = vUv * vec2(180.0, 105.0);
-    vec2 starCell = floor(starGrid);
-    vec2 starPosition = fract(starGrid) - 0.5;
-    float star = step(0.992, hash21(starCell)) * smoothstep(0.065, 0.0, length(starPosition));
-    star *= smoothstep(0.39, 0.92, vUv.y);
-    sky += vec3(0.3, 0.66, 1.0) * star;
-
-    float grain = hash21(vUv * 900.0 + uTime) - 0.5;
-    sky += grain * 0.018;
+    float coldGlow = exp(-pow((vUv.x - 0.18) * 2.2, 2.0) - pow((vUv.y - 0.72) * 3.3, 2.0));
+    sky += vec3(0.010, 0.042, 0.048) * coldGlow;
     outColor = vec4(max(sky, vec3(0.0)), 1.0);
+}
+)GLSL";
+
+inline constexpr char angelVertex[] = R"GLSL(
+#version 330 core
+layout (location = 0) in vec3 aPosition;
+
+uniform mat4 uView;
+uniform mat4 uProjection;
+uniform vec3 uCenter;
+uniform vec3 uCameraRight;
+uniform vec3 uCameraUp;
+uniform float uScale;
+
+out vec2 vUv;
+
+void main() {
+    vec2 corner = aPosition.xy;
+    vec3 worldPosition = uCenter
+        + uCameraRight * corner.x * uScale * 2.05
+        + uCameraUp * corner.y * uScale * 1.65;
+    vUv = vec2(corner.x * 0.5 + 0.5, 1.0 - (corner.y * 0.5 + 0.5));
+    gl_Position = uProjection * uView * vec4(worldPosition, 1.0);
+}
+)GLSL";
+
+inline constexpr char angelFragment[] = R"GLSL(
+#version 330 core
+in vec2 vUv;
+
+uniform sampler2D uAngelTexture;
+uniform vec3 uFogColor;
+uniform float uDistance;
+uniform float uDisruption;
+uniform float uTime;
+
+out vec4 outColor;
+
+float hash21(vec2 value) {
+    value = fract(value * vec2(123.34, 456.21));
+    value += dot(value, value + 45.32);
+    return fract(value.x * value.y);
+}
+
+void main() {
+    vec3 source = texture(uAngelTexture, vUv).rgb;
+    float luminance = dot(source, vec3(0.2126, 0.7152, 0.0722));
+    float alpha = smoothstep(0.030, 0.285, luminance);
+
+    // Makes the source feel like a photographed, dissolving signal rather than a hard cut-out.
+    float edgeNoise = hash21(floor(vUv * 210.0) + floor(uTime * 22.0));
+    alpha *= smoothstep(0.10, 0.88, edgeNoise + luminance * 0.55);
+    float atmosphericFade = exp(-uDistance * 0.0018);
+    alpha *= mix(0.35, 1.0, atmosphericFade);
+
+    vec3 coldWhite = mix(vec3(0.28, 0.72, 0.70), vec3(1.0, 1.0, 0.96), clamp(luminance * 1.35, 0.0, 1.0));
+    vec3 color = mix(coldWhite, source, 0.36);
+    color = mix(color, vec3(0.95, 0.10, 0.025), clamp(uDisruption * 0.82, 0.0, 1.0));
+
+    float fog = 1.0 - exp(-uDistance * 0.0016);
+    color = mix(color, uFogColor, fog * 0.62);
+    outColor = vec4(color, alpha);
+}
+)GLSL";
+
+inline constexpr char postVertex[] = R"GLSL(
+#version 330 core
+layout (location = 0) in vec3 aPosition;
+out vec2 vUv;
+
+void main() {
+    vUv = aPosition.xy * 0.5 + 0.5;
+    gl_Position = vec4(aPosition.xy, 0.0, 1.0);
+}
+)GLSL";
+
+inline constexpr char postFragment[] = R"GLSL(
+#version 330 core
+in vec2 vUv;
+uniform sampler2D uScene;
+uniform float uTime;
+uniform float uResolutionX;
+uniform float uResolutionY;
+uniform float uZoom;
+out vec4 outColor;
+
+float hash21(vec2 value) {
+    value = fract(value * vec2(123.34, 456.21));
+    value += dot(value, value + 45.32);
+    return fract(value.x * value.y);
+}
+
+vec3 sampleScene(vec2 uv) {
+    return texture(uScene, clamp(uv, 0.001, 0.999)).rgb;
+}
+
+void main() {
+    vec2 texel = vec2(1.0 / uResolutionX, 1.0 / uResolutionY);
+    vec2 centered = vUv - 0.5;
+    float radius = dot(centered, centered);
+    vec2 aberration = centered * (0.0013 + 0.00045 * uZoom);
+
+    vec3 color;
+    color.r = sampleScene(vUv + aberration).r;
+    color.g = sampleScene(vUv).g;
+    color.b = sampleScene(vUv - aberration).b;
+
+    // Small, restrained bloom is what turns the white signal into a filmed light source.
+    vec3 blur = vec3(0.0);
+    blur += sampleScene(vUv + texel * vec2(-2.0, 0.0));
+    blur += sampleScene(vUv + texel * vec2(2.0, 0.0));
+    blur += sampleScene(vUv + texel * vec2(0.0, -2.0));
+    blur += sampleScene(vUv + texel * vec2(0.0, 2.0));
+    blur += sampleScene(vUv + texel * vec2(-1.0, -1.0));
+    blur += sampleScene(vUv + texel * vec2(1.0, 1.0));
+    blur /= 6.0;
+    vec3 bloom = max(blur - vec3(0.09), vec3(0.0));
+    color += bloom * 0.72;
+
+    float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    color = mix(vec3(luminance) * vec3(0.58, 0.95, 0.86), color, 0.52);
+    color = color / (color + vec3(0.48));
+    color = pow(max(color, vec3(0.0)), vec3(1.0 / 1.85));
+
+    float grain = hash21(gl_FragCoord.xy + vec2(uTime * 71.0, uTime * 19.0)) - 0.5;
+    color += grain * 0.070;
+    float vignette = smoothstep(0.76, 0.12, radius * 1.72);
+    color *= mix(0.42, 1.0, vignette);
+    outColor = vec4(max(color, vec3(0.0)), 1.0);
 }
 )GLSL";
 

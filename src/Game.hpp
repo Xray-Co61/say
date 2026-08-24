@@ -39,7 +39,6 @@ private:
         float phase = 0.0F;
         float age = 0.0F;
         float disruption = 0.0F;
-        float respawnDelay = 0.0F;
         float trailClock = 0.0F;
     };
 
@@ -71,17 +70,21 @@ private:
 
     Shader worldShader_{};
     Shader skyShader_{};
+    Shader angelShader_{};
+    Shader postShader_{};
     Shader hudShader_{};
 
     Mesh terrain_{};
-    Mesh angelBody_{};
-    Mesh leftWing_{};
-    Mesh rightWing_{};
-    Mesh halo_{};
     Mesh skyQuad_{};
     Mesh trailLines_{};
     Mesh projectileLines_{};
 
+    GLuint angelTexture_ = 0;
+    GLuint sceneFramebuffer_ = 0;
+    GLuint sceneColorTexture_ = 0;
+    GLuint sceneDepthBuffer_ = 0;
+    int sceneWidth_ = 0;
+    int sceneHeight_ = 0;
     GLuint hudVertexArray_ = 0;
     GLuint hudVertexBuffer_ = 0;
 
@@ -91,7 +94,7 @@ private:
 
     Vec3 cameraPosition_{};
     float yawDegrees_ = -90.0F;
-    float pitchDegrees_ = -4.0F;
+    float pitchDegrees_ = -2.0F;
     float zoom_ = 1.0F;
     float elapsedSeconds_ = 0.0F;
     float spawnClock_ = 0.0F;
@@ -117,12 +120,12 @@ private:
 
     static float terrainHeight(float x, float z);
     static Mesh makeTerrain();
-    static Mesh makeAngelBody();
-    static Mesh makeWing(float direction);
-    static Mesh makeHalo();
     static Mesh makeSkyQuad();
 
     void createHudBuffer();
+    void loadAngelTexture();
+    void ensureSceneTarget(int width, int height);
+    void destroySceneTarget() noexcept;
     void setCursorCaptured(bool captured);
     void updateAim(float deltaSeconds);
     void updateAngels(float deltaSeconds);

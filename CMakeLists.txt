@@ -82,3 +82,12 @@ endif()
 set_target_properties(fallen_signal PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:fallen_signal>"
 )
+
+# The cinematic angel is a luma-keyed photographed sprite, copied next to the
+# executable for both a local CMake run and the portable Windows package.
+add_custom_command(TARGET fallen_signal POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/assets/angel_sprite.ppm"
+        "$<TARGET_FILE_DIR:fallen_signal>/angel_sprite.ppm"
+    VERBATIM
+)

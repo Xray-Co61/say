@@ -5,12 +5,19 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstddef>
 #include <cmath>
 #include <cstdio>
-#include <numbers>
+#include <fstream>
+#include <limits>
+#include <stdexcept>
 #include <string>
 #include <utility>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace fallen {
 namespace {
@@ -18,62 +25,56 @@ namespace {
 constexpr Vec3 kUp{0.0F, 1.0F, 0.0F};
 constexpr float kProjectileSpeed = 138.0F;
 constexpr float kMaxProjectileLifetime = 8.0F;
-constexpr std::size_t kMaximumAngels = 9;
+constexpr std::size_t kMaximumAngels = 7;
 
-void appendTriangle(std::vector<Vertex>& vertices,
-                    const Vec3& first, const Vec3& second, const Vec3& third,
-                    const Vec3& color) {
-    const Vec3 normal = normalise(cross(second - first, third - first));
-    vertices.push_back({first, normal, color});
-    vertices.push_back({second, normal, color});
-    vertices.push_back({third, normal, color});
-}
+std::string readPpmToken(std::istream& input) {
+    std::string token;
+    char character = '\0';
 
-void appendQuad(std::vector<Vertex>& vertices,
-                const Vec3& bottomLeft, const Vec3& bottomRight,
-                const Vec3& topRight, const Vec3& topLeft,
-                const Vec3& color) {
-    appendTriangle(vertices, bottomLeft, bottomRight, topRight, color);
-    appendTriangle(vertices, bottomLeft, topRight, topLeft, color);
-}
-
-void appendLowPolySphere(std::vector<Vertex>& vertices,
-                         const Vec3& center, float radius,
-                         int latitudeCount, int longitudeCount,
-                         const Vec3& color) {
-    for (int latitude = 0; latitude < latitudeCount; ++latitude) {
-        const float lowTheta = -kPi * 0.5F + kPi * static_cast<float>(latitude) / latitudeCount;
-        const float highTheta = -kPi * 0.5F + kPi * static_cast<float>(latitude + 1) / latitudeCount;
-
-        for (int longitude = 0; longitude < longitudeCount; ++longitude) {
-            const float lowPhi = 2.0F * kPi * static_cast<float>(longitude) / longitudeCount;
-            const float highPhi = 2.0F * kPi * static_cast<float>(longitude + 1) / longitudeCount;
-
-            const auto point = [&](float theta, float phi) {
-                return center + Vec3{
-                    radius * std::cos(theta) * std::cos(phi),
-                    radius * std::sin(theta),
-                    radius * std::cos(theta) * std::sin(phi),
-                };
-            };
-
-            const Vec3 lowerLeft = point(lowTheta, lowPhi);
-            const Vec3 lowerRight = point(lowTheta, highPhi);
-            const Vec3 upperRight = point(highTheta, highPhi);
-            const Vec3 upperLeft = point(highTheta, lowPhi);
-            appendQuad(vertices, lowerLeft, lowerRight, upperRight, upperLeft, color);
+    while (input.get(character)) {
+        if (character == '#') {
+            input.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+            continue;
+        }
+        if (!std::isspace(static_cast<unsigned char>(character))) {
+            token.push_back(character);
+            break;
         }
     }
+
+    while (input.get(character)) {
+        if (std::isspace(static_cast<unsigned char>(character))) {
+            break;
+        }
+        token.push_back(character);
+    }
+    return token;
 }
 
-float wrapDegrees(float degrees) {
-    while (degrees > 180.0F) {
-        degrees -= 360.0F;
+std::vector<unsigned char> loadPpm(const char* path, int& width, int& height) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error(std::string("Could not open texture: ") + path);
     }
-    while (degrees < -180.0F) {
-        degrees += 360.0F;
+
+    const std::string magic = readPpmToken(input);
+    if (magic != "P6") {
+        throw std::runtime_error(std::string("Texture is not a binary PPM: ") + path);
     }
-    return degrees;
+
+    width = std::stoi(readPpmToken(input));
+    height = std::stoi(readPpmToken(input));
+    const int maximum = std::stoi(readPpmToken(input));
+    if (width <= 0 || height <= 0 || maximum != 255) {
+        throw std::runtime_error(std::string("Unsupported PPM header: ") + path);
+    }
+
+    std::vector<unsigned char> pixels(static_cast<std::size_t>(width) * height * 3U);
+    input.read(reinterpret_cast<char*>(pixels.data()), static_cast<std::streamsize>(pixels.size()));
+    if (input.gcount() != static_cast<std::streamsize>(pixels.size())) {
+        throw std::runtime_error(std::string("Texture is truncated: ") + path);
+    }
+    return pixels;
 }
 
 } // namespace
@@ -82,6 +83,10 @@ Game::Game(GLFWwindow* window)
     : window_(window) {}
 
 Game::~Game() {
+    destroySceneTarget();
+    if (angelTexture_ != 0) {
+        glDeleteTextures(1, &angelTexture_);
+    }
     if (hudVertexBuffer_ != 0) {
         glDeleteBuffers(1, &hudVertexBuffer_);
     }
@@ -93,17 +98,16 @@ Game::~Game() {
 void Game::initialise() {
     worldShader_ = Shader(shaders::worldVertex, shaders::worldFragment, "world");
     skyShader_ = Shader(shaders::skyVertex, shaders::skyFragment, "sky");
-    hudShader_ = Shader(shaders::hudVertex, shaders::hudFragment, "hud");
+    angelShader_ = Shader(shaders::angelVertex, shaders::angelFragment, "angel sprite");
+    postShader_ = Shader(shaders::postVertex, shaders::postFragment, "cinematic post");
+    hudShader_ = Shader(shaders::hudVertex, shaders::hudFragment, "optic hud");
 
     terrain_ = makeTerrain();
-    angelBody_ = makeAngelBody();
-    leftWing_ = makeWing(-1.0F);
-    rightWing_ = makeWing(1.0F);
-    halo_ = makeHalo();
     skyQuad_ = makeSkyQuad();
     trailLines_ = Mesh(std::vector<Vertex>{}, std::vector<std::uint32_t>{}, GL_LINES, GL_DYNAMIC_DRAW);
     projectileLines_ = Mesh(std::vector<Vertex>{}, std::vector<std::uint32_t>{}, GL_LINES, GL_DYNAMIC_DRAW);
     createHudBuffer();
+    loadAngelTexture();
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
@@ -111,7 +115,7 @@ void Game::initialise() {
     glCullFace(GL_BACK);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glClearColor(0.005F, 0.015F, 0.035F, 1.0F);
+    glClearColor(0.001F, 0.007F, 0.008F, 1.0F);
 
     glfwSetWindowUserPointer(window_, this);
     glfwSetCursorPosCallback(window_, &Game::cursorPositionCallback);
@@ -126,8 +130,8 @@ void Game::update(float deltaSeconds) {
     deltaSeconds = std::min(deltaSeconds, 0.1F);
     elapsedSeconds_ += deltaSeconds;
     fireCooldown_ = std::max(0.0F, fireCooldown_ - deltaSeconds);
-    recoil_ = std::max(0.0F, recoil_ - deltaSeconds * 4.2F);
-    zoomPulse_ = std::max(0.0F, zoomPulse_ - deltaSeconds * 3.0F);
+    recoil_ = std::max(0.0F, recoil_ - deltaSeconds * 4.8F);
+    zoomPulse_ = std::max(0.0F, zoomPulse_ - deltaSeconds * 3.5F);
 
     updateAim(deltaSeconds);
 
@@ -169,6 +173,8 @@ void Game::render(int framebufferWidth, int framebufferHeight) {
         return;
     }
 
+    ensureSceneTarget(framebufferWidth, framebufferHeight);
+    glBindFramebuffer(GL_FRAMEBUFFER, sceneFramebuffer_);
     glViewport(0, 0, framebufferWidth, framebufferHeight);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -181,29 +187,45 @@ void Game::render(int framebufferWidth, int framebufferHeight) {
     glEnable(GL_DEPTH_TEST);
 
     const float aspectRatio = static_cast<float>(framebufferWidth) / static_cast<float>(framebufferHeight);
-    const float fieldOfView = radians(62.0F / zoom_);
-    const Mat4 projection = Mat4::perspective(fieldOfView, aspectRatio, 0.15F, 2400.0F);
+    const float fieldOfView = radians(28.0F / zoom_);
+    const Mat4 projection = Mat4::perspective(fieldOfView, aspectRatio, 0.20F, 2200.0F);
     const Vec3 forward = cameraForward();
-    const Vec3 renderCamera = cameraPosition_ - forward * (recoil_ * 0.16F);
+    const Vec3 renderCamera = cameraPosition_ - forward * (recoil_ * 0.10F);
     const Mat4 view = Mat4::lookAt(renderCamera, renderCamera + forward, kUp);
-
     renderWorld(view, projection);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, framebufferWidth, framebufferHeight);
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    postShader_.use();
+    postShader_.setInt("uScene", 0);
+    postShader_.setFloat("uTime", elapsedSeconds_);
+    postShader_.setFloat("uResolutionX", static_cast<float>(framebufferWidth));
+    postShader_.setFloat("uResolutionY", static_cast<float>(framebufferHeight));
+    postShader_.setFloat("uZoom", zoom_);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, sceneColorTexture_);
+    skyQuad_.draw();
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDepthMask(GL_TRUE);
+
     renderHud();
 }
 
 float Game::terrainHeight(float x, float z) {
-    const float broadRidge = 11.5F * std::sin(x * 0.010F) * std::cos(z * 0.012F);
-    const float middleRidge = 4.4F * std::sin((x + z) * 0.033F);
-    const float fineRidge = 1.8F * std::cos(x * 0.11F - z * 0.075F);
-    const float basin = -0.000020F * (x * x + z * z);
+    const float broadRidge = 8.5F * std::sin(x * 0.009F) * std::cos(z * 0.011F);
+    const float middleRidge = 3.1F * std::sin((x + z) * 0.029F);
+    const float fineRidge = 0.85F * std::cos(x * 0.15F - z * 0.11F);
+    const float basin = -0.000017F * (x * x + z * z);
     return broadRidge + middleRidge + fineRidge + basin - 9.5F;
 }
 
 Mesh Game::makeTerrain() {
-    constexpr int cellsPerAxis = 176;
-    constexpr float spacing = 6.0F;
+    constexpr int cellsPerAxis = 240;
+    constexpr float spacing = 5.0F;
     constexpr float halfExtent = cellsPerAxis * spacing * 0.5F;
-    constexpr float sampleStep = 1.0F;
+    constexpr float sampleStep = 0.7F;
 
     std::vector<Vertex> vertices;
     vertices.reserve(static_cast<std::size_t>((cellsPerAxis + 1) * (cellsPerAxis + 1)));
@@ -221,12 +243,11 @@ Mesh Game::makeTerrain() {
                 terrainHeight(x, z - sampleStep) - terrainHeight(x, z + sampleStep),
             });
 
-            const float elevation = clamp((height + 22.0F) / 37.0F, 0.0F, 1.0F);
-            const Vec3 lowColor{0.006F, 0.075F, 0.088F};
-            const Vec3 highColor{0.055F, 0.255F, 0.245F};
-            Vec3 color = lerp(lowColor, highColor, elevation);
-            const float coldNoise = 0.5F + 0.5F * std::sin(x * 0.23F + z * 0.17F);
-            color += Vec3{0.006F, 0.026F, 0.030F} * coldNoise;
+            const float elevation = clamp((height + 17.0F) / 23.0F, 0.0F, 1.0F);
+            const Vec3 lowColor{0.0025F, 0.020F, 0.018F};
+            const Vec3 highColor{0.018F, 0.078F, 0.066F};
+            const float weathering = 0.5F + 0.5F * std::sin(x * 0.11F + z * 0.07F);
+            const Vec3 color = lerp(lowColor, highColor, elevation) + Vec3{0.002F, 0.006F, 0.005F} * weathering;
             vertices.push_back({{x, height, z}, normal, color});
         }
     }
@@ -242,69 +263,6 @@ Mesh Game::makeTerrain() {
     }
 
     return Mesh(vertices, indices);
-}
-
-Mesh Game::makeAngelBody() {
-    std::vector<Vertex> vertices;
-    constexpr int segmentCount = 9;
-    const Vec3 dressColor{0.45F, 0.88F, 1.0F};
-
-    for (int segment = 0; segment < segmentCount; ++segment) {
-        const float firstAngle = 2.0F * kPi * static_cast<float>(segment) / segmentCount;
-        const float secondAngle = 2.0F * kPi * static_cast<float>(segment + 1) / segmentCount;
-
-        const Vec3 topFirst{0.34F * std::cos(firstAngle), 0.53F, 0.34F * std::sin(firstAngle)};
-        const Vec3 topSecond{0.34F * std::cos(secondAngle), 0.53F, 0.34F * std::sin(secondAngle)};
-        const Vec3 bottomFirst{0.83F * std::cos(firstAngle), -1.43F, 0.83F * std::sin(firstAngle)};
-        const Vec3 bottomSecond{0.83F * std::cos(secondAngle), -1.43F, 0.83F * std::sin(secondAngle)};
-        appendQuad(vertices, bottomFirst, bottomSecond, topSecond, topFirst, dressColor);
-    }
-
-    appendLowPolySphere(vertices, {0.0F, 1.05F, 0.0F}, 0.31F, 5, 8, {0.72F, 0.98F, 1.0F});
-    appendTriangle(vertices, {-0.18F, 0.52F, 0.0F}, {-1.04F, -0.10F, 0.07F}, {-0.67F, 0.72F, -0.03F}, dressColor);
-    appendTriangle(vertices, {0.18F, 0.52F, 0.0F}, {1.04F, -0.10F, 0.07F}, {0.67F, 0.72F, -0.03F}, dressColor);
-
-    return Mesh(vertices);
-}
-
-Mesh Game::makeWing(float direction) {
-    std::vector<Vertex> vertices;
-    const Vec3 wingColor{0.38F, 0.91F, 1.0F};
-    const Vec3 brightFeather{0.68F, 0.98F, 1.0F};
-
-    const Vec3 root{0.0F, 0.55F, 0.02F};
-    const Vec3 shoulder{direction * 0.96F, 0.82F, 0.02F};
-    const Vec3 highTip{direction * 2.15F, 1.78F, 0.10F};
-    const Vec3 farTip{direction * 3.50F, 0.18F, 0.14F};
-    const Vec3 lowTip{direction * 2.28F, -0.42F, 0.10F};
-
-    appendTriangle(vertices, root, shoulder, highTip, wingColor);
-    appendTriangle(vertices, root, highTip, farTip, wingColor);
-    appendTriangle(vertices, root, farTip, lowTip, wingColor);
-
-    for (int feather = 0; feather < 5; ++feather) {
-        const float fraction = static_cast<float>(feather) / 5.0F;
-        const Vec3 inner{direction * (0.75F + fraction * 1.9F), 0.48F - fraction * 0.32F, 0.13F};
-        const Vec3 outer{direction * (1.36F + fraction * 2.48F), 0.20F - fraction * 0.48F, 0.09F};
-        const Vec3 tip{direction * (1.82F + fraction * 2.12F), -0.20F - fraction * 0.55F, 0.12F};
-        appendTriangle(vertices, inner, outer, tip, brightFeather);
-    }
-
-    return Mesh(vertices);
-}
-
-Mesh Game::makeHalo() {
-    std::vector<Vertex> vertices;
-    constexpr int segments = 42;
-    for (int segment = 0; segment <= segments; ++segment) {
-        const float angle = 2.0F * kPi * static_cast<float>(segment) / segments;
-        vertices.push_back({
-            {0.58F * std::cos(angle), 1.60F, 0.58F * std::sin(angle)},
-            {0.0F, 1.0F, 0.0F},
-            {0.7F, 0.98F, 1.0F},
-        });
-    }
-    return Mesh(vertices, {}, GL_LINE_STRIP);
 }
 
 Mesh Game::makeSkyQuad() {
@@ -335,6 +293,104 @@ void Game::createHudBuffer() {
     glBindVertexArray(0);
 }
 
+void Game::loadAngelTexture() {
+    int width = 0;
+    int height = 0;
+    std::vector<std::string> candidates{"angel_sprite.ppm", "assets/angel_sprite.ppm"};
+
+#ifdef _WIN32
+    // A packaged EXE must find its sprite even when launched from another folder.
+    char executablePath[MAX_PATH]{};
+    const DWORD pathLength = GetModuleFileNameA(nullptr, executablePath, MAX_PATH);
+    if (pathLength > 0 && pathLength < MAX_PATH) {
+        const std::string fullPath(executablePath, pathLength);
+        const std::size_t separator = fullPath.find_last_of("\\/");
+        if (separator != std::string::npos) {
+            candidates.insert(candidates.begin(), fullPath.substr(0, separator + 1) + "angel_sprite.ppm");
+        }
+    }
+#endif
+
+    std::vector<unsigned char> pixels;
+    std::string lastError;
+    for (const std::string& candidate : candidates) {
+        try {
+            pixels = loadPpm(candidate.c_str(), width, height);
+            break;
+        } catch (const std::runtime_error& error) {
+            lastError = error.what();
+        }
+    }
+    if (pixels.empty()) {
+        throw std::runtime_error("Could not locate angel_sprite.ppm. " + lastError);
+    }
+
+    glGenTextures(1, &angelTexture_);
+    glBindTexture(GL_TEXTURE_2D, angelTexture_);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+void Game::ensureSceneTarget(int width, int height) {
+    if (sceneFramebuffer_ != 0 && sceneWidth_ == width && sceneHeight_ == height) {
+        return;
+    }
+
+    destroySceneTarget();
+    sceneWidth_ = width;
+    sceneHeight_ = height;
+
+    glGenFramebuffers(1, &sceneFramebuffer_);
+    glBindFramebuffer(GL_FRAMEBUFFER, sceneFramebuffer_);
+
+    glGenTextures(1, &sceneColorTexture_);
+    glBindTexture(GL_TEXTURE_2D, sceneColorTexture_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, sceneColorTexture_, 0);
+
+    glGenRenderbuffers(1, &sceneDepthBuffer_);
+    glBindRenderbuffer(GL_RENDERBUFFER, sceneDepthBuffer_);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, sceneDepthBuffer_);
+
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        destroySceneTarget();
+        throw std::runtime_error("Could not create the cinematic render target.");
+    }
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void Game::destroySceneTarget() noexcept {
+    if (sceneDepthBuffer_ != 0) {
+        glDeleteRenderbuffers(1, &sceneDepthBuffer_);
+        sceneDepthBuffer_ = 0;
+    }
+    if (sceneColorTexture_ != 0) {
+        glDeleteTextures(1, &sceneColorTexture_);
+        sceneColorTexture_ = 0;
+    }
+    if (sceneFramebuffer_ != 0) {
+        glDeleteFramebuffers(1, &sceneFramebuffer_);
+        sceneFramebuffer_ = 0;
+    }
+    sceneWidth_ = 0;
+    sceneHeight_ = 0;
+}
+
 void Game::setCursorCaptured(bool captured) {
     cursorCaptured_ = captured;
     firstCursorSample_ = true;
@@ -349,8 +405,8 @@ void Game::setCursorCaptured(bool captured) {
 void Game::updateAim(float deltaSeconds) {
     float horizontalSpeed = 0.0F;
     float verticalSpeed = 0.0F;
-    constexpr float fastAimSpeed = 105.0F;
-    constexpr float fineAimSpeed = 24.0F;
+    constexpr float fastAimSpeed = 42.0F;
+    constexpr float fineAimSpeed = 8.0F;
 
     if (glfwGetKey(window_, GLFW_KEY_A) == GLFW_PRESS) {
         horizontalSpeed -= fastAimSpeed;
@@ -364,7 +420,6 @@ void Game::updateAim(float deltaSeconds) {
     if (glfwGetKey(window_, GLFW_KEY_S) == GLFW_PRESS) {
         verticalSpeed -= fastAimSpeed;
     }
-
     if (glfwGetKey(window_, GLFW_KEY_LEFT) == GLFW_PRESS) {
         horizontalSpeed -= fineAimSpeed;
     }
@@ -378,8 +433,9 @@ void Game::updateAim(float deltaSeconds) {
         verticalSpeed -= fineAimSpeed;
     }
 
-    yawDegrees_ = wrapDegrees(yawDegrees_ + horizontalSpeed * deltaSeconds + mouseDeltaX_ * 0.075F);
-    pitchDegrees_ = clamp(pitchDegrees_ + verticalSpeed * deltaSeconds - mouseDeltaY_ * 0.075F, -62.0F, 58.0F);
+    // This is an optic mounted in an armoured system, not a free-flying camera.
+    yawDegrees_ = clamp(yawDegrees_ + horizontalSpeed * deltaSeconds + mouseDeltaX_ * 0.022F, -112.0F, -68.0F);
+    pitchDegrees_ = clamp(pitchDegrees_ + verticalSpeed * deltaSeconds - mouseDeltaY_ * 0.022F, -14.0F, 16.0F);
     mouseDeltaX_ = 0.0F;
     mouseDeltaY_ = 0.0F;
 
@@ -392,7 +448,7 @@ void Game::updateAim(float deltaSeconds) {
     }
     if (zoomDirection != 0.0F) {
         const float previousZoom = zoom_;
-        zoom_ = clamp(zoom_ + zoomDirection * deltaSeconds * 1.8F, 1.0F, 6.0F);
+        zoom_ = clamp(zoom_ + zoomDirection * deltaSeconds * 0.72F, 1.0F, 3.2F);
         if (zoom_ != previousZoom) {
             zoomPulse_ = 1.0F;
         }
@@ -403,42 +459,37 @@ void Game::updateAngels(float deltaSeconds) {
     spawnClock_ -= deltaSeconds;
     if (spawnClock_ <= 0.0F && angels_.size() < kMaximumAngels) {
         spawnAngel(false);
-        spawnClock_ = randomRange(1.2F, 2.8F);
+        spawnClock_ = randomRange(2.2F, 4.4F);
     }
 
     for (Angel& angel : angels_) {
         if (angel.disruption > 0.0F) {
             angel.disruption -= deltaSeconds;
-            angel.position += angel.velocity * (deltaSeconds * 0.22F);
-            angel.position.y -= deltaSeconds * 7.0F;
-            angel.trailClock += deltaSeconds;
-            if (angel.trailClock >= 0.035F) {
-                angel.trailClock = 0.0F;
-                angel.trail.push_back(angel.position);
-                if (angel.trail.size() > 32) {
-                    angel.trail.erase(angel.trail.begin());
-                }
-            }
-            if (angel.disruption <= 0.0F) {
-                resetAngel(angel, false);
-            }
-            continue;
+            angel.position += angel.velocity * (deltaSeconds * 0.18F);
+            angel.position.y -= deltaSeconds * 3.5F;
+        } else {
+            angel.age += deltaSeconds;
+            angel.position += angel.velocity * deltaSeconds;
+            angel.position.y = angel.baseAltitude + std::sin(angel.age * angel.waveFrequency + angel.phase) * angel.waveAmplitude;
         }
 
-        angel.age += deltaSeconds;
-        angel.position += angel.velocity * deltaSeconds;
-        angel.position.y = angel.baseAltitude + std::sin(angel.age * angel.waveFrequency + angel.phase) * angel.waveAmplitude;
         angel.trailClock += deltaSeconds;
-        if (angel.trailClock >= 0.035F) {
+        if (angel.trailClock >= 0.050F) {
             angel.trailClock = 0.0F;
             angel.trail.push_back(angel.position);
-            if (angel.trail.size() > 32) {
+            if (angel.trail.size() > 26) {
                 angel.trail.erase(angel.trail.begin());
             }
         }
 
         const Vec3 relativePosition = angel.position - cameraPosition_;
-        if (dot(relativePosition, angel.heading) > 960.0F || length(relativePosition) > 1450.0F || angel.position.y < -80.0F) {
+        if (angel.disruption <= 0.0F && (dot(relativePosition, angel.heading) > 940.0F || length(relativePosition) > 1350.0F)) {
+            resetAngel(angel, false);
+        }
+        if (angel.disruption <= 0.0F && angel.position.y < -80.0F) {
+            resetAngel(angel, false);
+        }
+        if (angel.disruption <= 0.0F && angel.age > 25.0F) {
             resetAngel(angel, false);
         }
     }
@@ -450,7 +501,7 @@ void Game::updateProjectiles(float deltaSeconds) {
         projectile.position += projectile.velocity * deltaSeconds;
         projectile.age += deltaSeconds;
         projectile.trail.push_back(projectile.position);
-        if (projectile.trail.size() > 18) {
+        if (projectile.trail.size() > 15) {
             projectile.trail.erase(projectile.trail.begin());
         }
 
@@ -459,7 +510,7 @@ void Game::updateProjectiles(float deltaSeconds) {
                 continue;
             }
             if (projectileHitsAngel(projectile, angel)) {
-                angel.disruption = 1.25F;
+                angel.disruption = 1.15F;
                 angel.trail.clear();
                 angel.trail.push_back(angel.position);
                 ++signalsResolved_;
@@ -482,51 +533,51 @@ void Game::spawnAngel(bool immediatelyVisible) {
 
 void Game::resetAngel(Angel& angel, bool immediatelyVisible) {
     angel = Angel{};
-    const Vec3 flatForward = normalise({cameraForward().x, 0.0F, cameraForward().z});
+    const Vec3 forward = cameraForward();
+    const Vec3 flatForward = normalise({forward.x, 0.0F, forward.z});
     const Vec3 right = normalise(cross(flatForward, kUp));
-    const float altitude = randomRange(12.0F, 88.0F);
-    const float lateralOffset = randomRange(-150.0F, 150.0F);
-    const float speed = randomRange(46.0F, 82.0F);
+    const float speed = randomRange(31.0F, 57.0F);
 
     angel.heading = flatForward;
     angel.side = right;
-    angel.velocity = flatForward * speed + right * randomRange(-7.0F, 7.0F);
-    angel.scale = randomRange(1.15F, 2.85F);
-    angel.waveAmplitude = randomRange(1.0F, 7.0F);
-    angel.waveFrequency = randomRange(0.55F, 1.55F);
+    angel.velocity = flatForward * speed + right * randomRange(-3.8F, 3.8F);
+    angel.scale = randomRange(1.15F, 2.20F);
+    angel.waveAmplitude = randomRange(0.7F, 3.8F);
+    angel.waveFrequency = randomRange(0.38F, 0.92F);
     angel.phase = randomRange(0.0F, 2.0F * kPi);
-    angel.baseAltitude = altitude;
+    angel.baseAltitude = cameraPosition_.y + randomRange(8.0F, 46.0F);
 
     if (immediatelyVisible) {
-        angel.position = cameraPosition_ + flatForward * randomRange(75.0F, 420.0F) + right * lateralOffset;
+        const float distance = randomRange(135.0F, 420.0F);
+        angel.position = cameraPosition_ + flatForward * distance + right * randomRange(-distance * 0.14F, distance * 0.14F);
     } else {
-        angel.position = cameraPosition_ - flatForward * randomRange(90.0F, 300.0F) + right * lateralOffset;
+        angel.position = cameraPosition_ - flatForward * randomRange(85.0F, 260.0F) + right * randomRange(-95.0F, 95.0F);
     }
-    angel.position.y = altitude + std::sin(angel.phase) * angel.waveAmplitude;
+    angel.position.y = angel.baseAltitude + std::sin(angel.phase) * angel.waveAmplitude;
 
-    constexpr int trailSamples = 26;
+    constexpr int trailSamples = 22;
     angel.trail.reserve(trailSamples + 8);
     for (int sample = 0; sample < trailSamples; ++sample) {
-        const float secondsBehind = static_cast<float>(trailSamples - sample) * 0.035F;
+        const float secondsBehind = static_cast<float>(trailSamples - sample) * 0.050F;
         angel.trail.push_back(angel.position - angel.velocity * secondsBehind);
     }
 }
 
 void Game::fire() {
-    if (fireCooldown_ > 0.0F || projectiles_.size() >= 28) {
+    if (fireCooldown_ > 0.0F || projectiles_.size() >= 22) {
         return;
     }
 
     const Vec3 forward = cameraForward();
     Projectile projectile{};
-    projectile.position = cameraPosition_ + forward * 2.0F + Vec3{0.0F, -0.24F, 0.0F};
+    projectile.position = cameraPosition_ + forward * 1.4F + Vec3{0.0F, -0.18F, 0.0F};
     projectile.previousPosition = projectile.position;
     projectile.velocity = forward * kProjectileSpeed;
-    projectile.trail.push_back(projectile.position - projectile.velocity * 0.08F);
+    projectile.trail.push_back(projectile.position - projectile.velocity * 0.07F);
     projectile.trail.push_back(projectile.position);
     projectiles_.push_back(std::move(projectile));
 
-    fireCooldown_ = 0.14F;
+    fireCooldown_ = 0.18F;
     recoil_ = 1.0F;
 }
 
@@ -534,7 +585,7 @@ void Game::acquireLock() {
     lockedAngel_ = -1;
     lockedDistance_ = 0.0F;
     const Vec3 forward = cameraForward();
-    const float coneRadians = radians(2.2F) / zoom_;
+    const float coneRadians = radians(0.92F) / zoom_;
     const float minimumDot = std::cos(coneRadians);
     float bestDot = minimumDot;
 
@@ -558,19 +609,33 @@ void Game::acquireLock() {
 }
 
 void Game::resetEncounter() {
-    cameraPosition_ = {0.0F, terrainHeight(0.0F, 0.0F) + 4.0F, 0.0F};
+    cameraPosition_ = {0.0F, terrainHeight(0.0F, 0.0F) + 3.0F, 0.0F};
     yawDegrees_ = -90.0F;
-    pitchDegrees_ = -4.0F;
+    pitchDegrees_ = -2.0F;
     zoom_ = 1.0F;
     projectiles_.clear();
     angels_.clear();
     signalsResolved_ = 0;
     fireCooldown_ = 0.0F;
     recoil_ = 0.0F;
-    spawnClock_ = 1.0F;
+    spawnClock_ = 1.6F;
 
-    for (int index = 0; index < 4; ++index) {
+    for (int index = 0; index < 3; ++index) {
         spawnAngel(true);
+    }
+
+    // The first signal always begins inside the narrow optic's usable field.
+    if (!angels_.empty()) {
+        Angel& guide = angels_.front();
+        const Vec3 forward = normalise({cameraForward().x, 0.0F, cameraForward().z});
+        guide.position = cameraPosition_ + forward * 215.0F;
+        guide.baseAltitude = cameraPosition_.y + 12.0F;
+        guide.position.y = guide.baseAltitude;
+        guide.waveAmplitude = 1.0F;
+        guide.trail.clear();
+        for (int sample = 0; sample < 22; ++sample) {
+            guide.trail.push_back(guide.position - guide.velocity * (static_cast<float>(22 - sample) * 0.05F));
+        }
     }
     acquireLock();
 }
@@ -580,7 +645,7 @@ void Game::updateWindowTitle() {
     const float flightSeconds = lockedAngel_ >= 0 ? lockedDistance_ / kProjectileSpeed : 0.0F;
     char title[256]{};
     std::snprintf(title, sizeof(title),
-                  "FALLEN SIGNAL | %s | R:%04dm | ZOOM x%.1f | FLIGHT %.2fs | RESOLVED %02d | WASD fast / arrows fine / +/- zoom / click or space fire / R reset",
+                  "FALLEN SIGNAL | %s | RANGE %04dm | OPTIC x%.1f | FLIGHT %.2fs | RESOLVED %02d",
                   lockedAngel_ >= 0 ? "LOCK" : "SEARCH", rangeMetres, zoom_, flightSeconds, signalsResolved_);
     glfwSetWindowTitle(window_, title);
 }
@@ -613,7 +678,7 @@ bool Game::projectileHitsAngel(const Projectile& projectile, const Angel& angel)
 
     const float interpolation = clamp(dot(angel.position - projectile.previousPosition, segment) / segmentLengthSquared, 0.0F, 1.0F);
     const Vec3 nearestPoint = projectile.previousPosition + segment * interpolation;
-    const float hitRadius = angel.scale * 2.65F;
+    const float hitRadius = angel.scale * 3.0F;
     return lengthSquared(angel.position - nearestPoint) <= hitRadius * hitRadius;
 }
 
@@ -622,9 +687,9 @@ void Game::renderWorld(const Mat4& view, const Mat4& projection) {
     worldShader_.setMat4("uView", view);
     worldShader_.setMat4("uProjection", projection);
     worldShader_.setVec3("uCameraPosition", cameraPosition_);
-    worldShader_.setVec3("uFogColor", {0.014F, 0.11F, 0.14F});
-    worldShader_.setVec3("uLightDirection", {-0.35F, 0.82F, 0.29F});
-    worldShader_.setFloat("uFogDensity", 0.0025F);
+    worldShader_.setVec3("uFogColor", {0.008F, 0.092F, 0.082F});
+    worldShader_.setVec3("uLightDirection", {-0.28F, 0.68F, 0.31F});
+    worldShader_.setFloat("uFogDensity", 0.0060F);
     worldShader_.setVec3("uEmission", {0.0F, 0.0F, 0.0F});
     worldShader_.setFloat("uOpacity", 1.0F);
     worldShader_.setMat4("uModel", Mat4::identity());
@@ -638,41 +703,34 @@ void Game::renderWorld(const Mat4& view, const Mat4& projection) {
 }
 
 void Game::renderAngel(const Angel& angel, const Mat4& view, const Mat4& projection) {
-    const Vec3 cameraOffset = cameraPosition_ - angel.position;
-    const float facingAngle = std::atan2(cameraOffset.x, cameraOffset.z);
-    const float flap = std::sin(elapsedSeconds_ * 8.5F + angel.phase) * 0.42F;
-    const float disruptionScale = 1.0F + std::max(0.0F, angel.disruption) * 0.30F;
-    const Mat4 baseTransform = Mat4::translation(angel.position)
-        * Mat4::rotationY(facingAngle)
-        * Mat4::scale(angel.scale * disruptionScale);
+    const Vec3 forward = cameraForward();
+    const Vec3 right = cameraRight();
+    const Vec3 up = normalise(cross(right, forward));
+    const float distance = length(angel.position - cameraPosition_);
 
-    worldShader_.use();
-    worldShader_.setMat4("uView", view);
-    worldShader_.setMat4("uProjection", projection);
-    worldShader_.setVec3("uCameraPosition", cameraPosition_);
-    worldShader_.setVec3("uFogColor", {0.014F, 0.11F, 0.14F});
-    worldShader_.setVec3("uLightDirection", {-0.35F, 0.82F, 0.29F});
-    worldShader_.setFloat("uFogDensity", 0.00165F);
-    worldShader_.setFloat("uOpacity", 1.0F);
+    angelShader_.use();
+    angelShader_.setMat4("uView", view);
+    angelShader_.setMat4("uProjection", projection);
+    angelShader_.setVec3("uCenter", angel.position);
+    angelShader_.setVec3("uCameraRight", right);
+    angelShader_.setVec3("uCameraUp", up);
+    angelShader_.setVec3("uFogColor", {0.008F, 0.092F, 0.082F});
+    angelShader_.setFloat("uScale", angel.scale * 2.1F * (1.0F + std::max(0.0F, angel.disruption) * 0.24F));
+    angelShader_.setFloat("uDistance", distance);
+    angelShader_.setFloat("uDisruption", std::max(0.0F, angel.disruption));
+    angelShader_.setFloat("uTime", elapsedSeconds_);
+    angelShader_.setInt("uAngelTexture", 0);
 
-    const Vec3 emission = angel.disruption > 0.0F
-        ? Vec3{1.4F, 0.24F, 0.08F}
-        : Vec3{0.38F, 0.83F, 1.0F};
-    worldShader_.setVec3("uEmission", emission);
-
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, angelTexture_);
     glDisable(GL_CULL_FACE);
-    worldShader_.setMat4("uModel", baseTransform * Mat4::rotationZ(-flap));
-    leftWing_.draw();
-    worldShader_.setMat4("uModel", baseTransform * Mat4::rotationZ(flap));
-    rightWing_.draw();
-    worldShader_.setMat4("uModel", baseTransform);
-    angelBody_.draw();
-
-    glLineWidth(2.0F);
-    worldShader_.setMat4("uModel", baseTransform * Mat4::scale(1.0F + std::max(0.0F, angel.disruption) * 1.8F));
-    halo_.draw();
-    glLineWidth(1.0F);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE);
+    skyQuad_.draw();
+    glDepthMask(GL_TRUE);
     glEnable(GL_CULL_FACE);
+    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 void Game::renderTrails(const Mat4& view, const Mat4& projection) {
@@ -683,8 +741,8 @@ void Game::renderTrails(const Mat4& view, const Mat4& projection) {
         }
         for (std::size_t index = 1; index < angel.trail.size(); ++index) {
             const float intensity = static_cast<float>(index) / static_cast<float>(angel.trail.size() - 1);
-            const Vec3 oldColor = lerp({0.01F, 0.05F, 0.09F}, {0.28F, 0.82F, 1.0F}, intensity * 0.72F);
-            const Vec3 newColor = lerp({0.01F, 0.05F, 0.09F}, {0.72F, 0.98F, 1.0F}, intensity);
+            const Vec3 oldColor = lerp({0.0005F, 0.006F, 0.006F}, {0.022F, 0.18F, 0.16F}, intensity * 0.60F);
+            const Vec3 newColor = lerp({0.0005F, 0.006F, 0.006F}, {0.22F, 0.70F, 0.61F}, intensity);
             vertices.push_back({angel.trail[index - 1], {}, oldColor});
             vertices.push_back({angel.trail[index], {}, newColor});
         }
@@ -696,20 +754,18 @@ void Game::renderTrails(const Mat4& view, const Mat4& projection) {
     worldShader_.setMat4("uProjection", projection);
     worldShader_.setMat4("uModel", Mat4::identity());
     worldShader_.setVec3("uCameraPosition", cameraPosition_);
-    worldShader_.setVec3("uFogColor", {0.014F, 0.11F, 0.14F});
-    worldShader_.setVec3("uLightDirection", {-0.35F, 0.82F, 0.29F});
-    worldShader_.setVec3("uEmission", {0.40F, 0.88F, 1.0F});
-    worldShader_.setFloat("uFogDensity", 0.00095F);
-    worldShader_.setFloat("uOpacity", 0.82F);
+    worldShader_.setVec3("uFogColor", {0.008F, 0.092F, 0.082F});
+    worldShader_.setVec3("uLightDirection", {-0.28F, 0.68F, 0.31F});
+    worldShader_.setVec3("uEmission", {0.035F, 0.15F, 0.12F});
+    worldShader_.setFloat("uFogDensity", 0.0034F);
+    worldShader_.setFloat("uOpacity", 0.56F);
 
     glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-    glDepthMask(GL_FALSE);
-    glLineWidth(2.0F);
-    trailLines_.draw();
-    glLineWidth(1.0F);
-    glDepthMask(GL_TRUE);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE);
+    glLineWidth(1.0F);
+    trailLines_.draw();
+    glDepthMask(GL_TRUE);
 }
 
 void Game::renderProjectiles(const Mat4& view, const Mat4& projection) {
@@ -717,17 +773,14 @@ void Game::renderProjectiles(const Mat4& view, const Mat4& projection) {
     for (const Projectile& projectile : projectiles_) {
         for (std::size_t index = 1; index < projectile.trail.size(); ++index) {
             const float intensity = static_cast<float>(index) / static_cast<float>(projectile.trail.size() - 1);
-            const Vec3 color = lerp({0.08F, 0.16F, 0.22F}, {0.82F, 0.98F, 1.0F}, intensity);
-            vertices.push_back({projectile.trail[index - 1], {}, color * 0.55F});
+            const Vec3 color = lerp({0.015F, 0.055F, 0.048F}, {0.55F, 0.86F, 0.72F}, intensity);
+            vertices.push_back({projectile.trail[index - 1], {}, color * 0.48F});
             vertices.push_back({projectile.trail[index], {}, color});
         }
 
-        const float markerSize = 0.38F;
-        vertices.push_back({projectile.position - kUp * markerSize, {}, {1.0F, 1.0F, 1.0F}});
-        vertices.push_back({projectile.position + kUp * markerSize, {}, {1.0F, 1.0F, 1.0F}});
-        const Vec3 right = cameraRight();
-        vertices.push_back({projectile.position - right * markerSize, {}, {1.0F, 1.0F, 1.0F}});
-        vertices.push_back({projectile.position + right * markerSize, {}, {1.0F, 1.0F, 1.0F}});
+        const float markerSize = 0.16F;
+        vertices.push_back({projectile.position - kUp * markerSize, {}, {0.72F, 0.92F, 0.80F}});
+        vertices.push_back({projectile.position + kUp * markerSize, {}, {0.72F, 0.92F, 0.80F}});
     }
     projectileLines_.updateVertices(vertices);
 
@@ -736,98 +789,73 @@ void Game::renderProjectiles(const Mat4& view, const Mat4& projection) {
     worldShader_.setMat4("uProjection", projection);
     worldShader_.setMat4("uModel", Mat4::identity());
     worldShader_.setVec3("uCameraPosition", cameraPosition_);
-    worldShader_.setVec3("uFogColor", {0.014F, 0.11F, 0.14F});
-    worldShader_.setVec3("uLightDirection", {-0.35F, 0.82F, 0.29F});
-    worldShader_.setVec3("uEmission", {0.74F, 0.95F, 1.0F});
-    worldShader_.setFloat("uFogDensity", 0.00070F);
-    worldShader_.setFloat("uOpacity", 0.95F);
+    worldShader_.setVec3("uFogColor", {0.008F, 0.092F, 0.082F});
+    worldShader_.setVec3("uLightDirection", {-0.28F, 0.68F, 0.31F});
+    worldShader_.setVec3("uEmission", {0.18F, 0.40F, 0.32F});
+    worldShader_.setFloat("uFogDensity", 0.0028F);
+    worldShader_.setFloat("uOpacity", 0.84F);
 
     glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-    glDepthMask(GL_FALSE);
-    glLineWidth(2.5F);
-    projectileLines_.draw();
-    glLineWidth(1.0F);
-    glDepthMask(GL_TRUE);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE);
+    projectileLines_.draw();
+    glDepthMask(GL_TRUE);
 }
 
 void Game::renderHud() {
     std::vector<HudVertex> vertices;
-    vertices.reserve(700);
+    vertices.reserve(420);
 
-    const HudColor cyan{0.34F, 0.93F, 1.0F, 0.84F};
-    const HudColor dimCyan{0.12F, 0.48F, 0.56F, 0.52F};
-    const HudColor faint{0.05F, 0.25F, 0.31F, 0.42F};
-    const HudColor red{1.0F, 0.12F, 0.055F, 0.94F};
-    const HudColor lockColor = lockedAngel_ >= 0 ? red : dimCyan;
+    const HudColor graphite{0.002F, 0.012F, 0.010F, 0.84F};
+    const HudColor fadedInk{0.014F, 0.060F, 0.052F, 0.43F};
+    const HudColor red{0.82F, 0.085F, 0.022F, 0.92F};
+    const HudColor cueColor = lockedAngel_ >= 0 ? red : fadedInk;
 
-    // Scope-like outer frame.
-    addHudLine(vertices, -0.98F, 0.94F, -0.78F, 0.94F, dimCyan);
-    addHudLine(vertices, -0.98F, 0.94F, -0.98F, 0.72F, dimCyan);
-    addHudLine(vertices, 0.98F, 0.94F, 0.78F, 0.94F, dimCyan);
-    addHudLine(vertices, 0.98F, 0.94F, 0.98F, 0.72F, dimCyan);
-    addHudLine(vertices, -0.98F, -0.94F, -0.78F, -0.94F, faint);
-    addHudLine(vertices, -0.98F, -0.94F, -0.98F, -0.72F, faint);
-    addHudLine(vertices, 0.98F, -0.94F, 0.78F, -0.94F, faint);
-    addHudLine(vertices, 0.98F, -0.94F, 0.98F, -0.72F, faint);
-
-    // The long ranging bars reproduce the optical-sight language from the reference.
-    addHudLine(vertices, -0.92F, 0.42F, -0.17F, 0.42F, dimCyan);
-    addHudLine(vertices, 0.17F, 0.42F, 0.92F, 0.42F, dimCyan);
-    for (int tick = 0; tick <= 16; ++tick) {
-        const float offset = static_cast<float>(tick) * (0.75F / 16.0F);
-        const float tickLength = tick % 4 == 0 ? 0.058F : (tick % 2 == 0 ? 0.035F : 0.020F);
-        addHudLine(vertices, -0.92F + offset, 0.42F, -0.92F + offset, 0.42F - tickLength, faint);
-        addHudLine(vertices, 0.17F + offset, 0.42F, 0.17F + offset, 0.42F - tickLength, faint);
+    // Optical ruler: intentionally incomplete, thin, and matte rather than a neon game HUD.
+    addHudLine(vertices, -0.95F, 0.39F, -0.29F, 0.39F, graphite);
+    addHudLine(vertices, 0.29F, 0.39F, 0.95F, 0.39F, graphite);
+    for (int tick = 0; tick <= 18; ++tick) {
+        const float fraction = static_cast<float>(tick) / 18.0F;
+        const float tickLength = tick % 5 == 0 ? 0.060F : (tick % 2 == 0 ? 0.036F : 0.020F);
+        const float leftX = -0.95F + fraction * 0.66F;
+        const float rightX = 0.29F + fraction * 0.66F;
+        addHudLine(vertices, leftX, 0.39F, leftX, 0.39F - tickLength, graphite);
+        addHudLine(vertices, rightX, 0.39F, rightX, 0.39F - tickLength, graphite);
     }
 
-    // Vertical rail and the four descending chevrons.
-    addHudLine(vertices, 0.0F, 0.58F, 0.0F, 0.13F, faint);
-    addHudLine(vertices, 0.0F, -0.13F, 0.0F, -0.69F, faint);
+    addHudLine(vertices, 0.0F, 0.34F, 0.0F, -0.74F, graphite);
+    addHudChevron(vertices, 0.0F, 0.285F, 0.042F, cueColor);
     for (int marker = 0; marker < 4; ++marker) {
-        addHudChevron(vertices, 0.0F, -0.17F - static_cast<float>(marker) * 0.125F, 0.035F, dimCyan);
+        addHudChevron(vertices, 0.0F, -0.03F - static_cast<float>(marker) * 0.115F, 0.035F, graphite);
     }
 
-    const float sightSize = clamp(0.13F / zoom_, 0.026F, 0.13F);
-    addHudLine(vertices, -sightSize * 2.0F, sightSize, -sightSize, sightSize, lockColor);
-    addHudLine(vertices, -sightSize, sightSize, -sightSize, sightSize * 2.0F, lockColor);
-    addHudLine(vertices, sightSize * 2.0F, sightSize, sightSize, sightSize, lockColor);
-    addHudLine(vertices, sightSize, sightSize, sightSize, sightSize * 2.0F, lockColor);
-    addHudLine(vertices, -sightSize * 2.0F, -sightSize, -sightSize, -sightSize, lockColor);
-    addHudLine(vertices, -sightSize, -sightSize, -sightSize, -sightSize * 2.0F, lockColor);
-    addHudLine(vertices, sightSize * 2.0F, -sightSize, sightSize, -sightSize, lockColor);
-    addHudLine(vertices, sightSize, -sightSize, sightSize, -sightSize * 2.0F, lockColor);
-
-    for (int section = 0; section < 14; ++section) {
-        const float first = 2.0F * kPi * static_cast<float>(section) / 14.0F;
-        const float second = 2.0F * kPi * static_cast<float>(section + 1) / 14.0F;
-        const float radius = sightSize * 0.54F;
-        addHudLine(vertices, std::cos(first) * radius, std::sin(first) * radius,
-                   std::cos(second) * radius, std::sin(second) * radius, cyan);
+    // A hand-drawn ballistic curve in the lower-left part of the optic.
+    constexpr int curveSegments = 24;
+    for (int segment = 0; segment < curveSegments; ++segment) {
+        const float firstT = static_cast<float>(segment) / curveSegments;
+        const float secondT = static_cast<float>(segment + 1) / curveSegments;
+        const auto curveY = [](float t) { return -0.60F + t * 0.17F + t * t * 0.43F; };
+        addHudLine(vertices, -0.94F + firstT * 0.62F, curveY(firstT),
+                   -0.94F + secondT * 0.62F, curveY(secondT), fadedInk);
     }
 
-    // Red target cue: always visible, but only bright when a moving angel is aligned.
-    addHudChevron(vertices, 0.0F, sightSize * 2.75F, sightSize * 0.72F, lockColor);
-    if (lockedAngel_ >= 0) {
-        addHudChevron(vertices, 0.0F, sightSize * 3.85F, sightSize * 0.46F, red);
-    }
+    const float aperture = clamp(0.050F / zoom_, 0.013F, 0.050F);
+    addHudLine(vertices, -aperture, 0.0F, aperture, 0.0F, graphite);
+    addHudLine(vertices, 0.0F, -aperture, 0.0F, aperture, graphite);
 
-    // Numeric telemetry: range on the left, zoom/firing-time/score on the right.
     const int range = lockedAngel_ >= 0 ? static_cast<int>(lockedDistance_) : 0;
     const int flightCentiseconds = lockedAngel_ >= 0 ? static_cast<int>((lockedDistance_ / kProjectileSpeed) * 100.0F) : 0;
-    addHudNumber(vertices, range, 4, -0.94F, 0.52F, 0.031F, cyan);
-    addHudNumber(vertices, static_cast<int>(zoom_ * 10.0F), 2, 0.72F, 0.52F, 0.031F, cyan);
-    addHudNumber(vertices, flightCentiseconds, 3, 0.70F, -0.84F, 0.026F, dimCyan);
-    addHudNumber(vertices, signalsResolved_, 2, -0.94F, -0.84F, 0.026F, dimCyan);
+    addHudNumber(vertices, range, 3, -0.88F, 0.27F, 0.022F, fadedInk);
+    addHudNumber(vertices, flightCentiseconds, 2, 0.76F, 0.27F, 0.022F, fadedInk);
+    addHudNumber(vertices, signalsResolved_, 2, -0.90F, -0.86F, 0.021F, fadedInk);
 
     if (fireCooldown_ > 0.0F || zoomPulse_ > 0.0F) {
-        const float pulse = fireCooldown_ > 0.0F ? fireCooldown_ / 0.14F : zoomPulse_;
-        const float radius = sightSize * (2.2F + (1.0F - pulse) * 2.2F);
-        const HudColor pulseColor{0.55F, 0.95F, 1.0F, pulse * 0.65F};
-        for (int section = 0; section < 18; ++section) {
-            const float first = 2.0F * kPi * static_cast<float>(section) / 18.0F;
-            const float second = 2.0F * kPi * static_cast<float>(section + 1) / 18.0F;
+        const float pulse = fireCooldown_ > 0.0F ? fireCooldown_ / 0.18F : zoomPulse_;
+        const float radius = aperture * (3.0F + (1.0F - pulse) * 2.4F);
+        for (int section = 0; section < 12; ++section) {
+            const float first = 2.0F * kPi * static_cast<float>(section) / 12.0F;
+            const float second = 2.0F * kPi * static_cast<float>(section + 1) / 12.0F;
+            const HudColor pulseColor{0.22F, 0.36F, 0.31F, pulse * 0.25F};
             addHudLine(vertices, std::cos(first) * radius, std::sin(first) * radius,
                        std::cos(second) * radius, std::sin(second) * radius, pulseColor);
         }
@@ -835,7 +863,7 @@ void Game::renderHud() {
 
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     hudShader_.use();
     glBindVertexArray(hudVertexArray_);
     glBindBuffer(GL_ARRAY_BUFFER, hudVertexBuffer_);
@@ -845,7 +873,6 @@ void Game::renderHud() {
                  GL_DYNAMIC_DRAW);
     glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(vertices.size()));
     glBindVertexArray(0);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glEnable(GL_DEPTH_TEST);
 }
 
