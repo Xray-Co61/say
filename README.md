@@ -4,6 +4,16 @@
 
 > نام فعلی فقط یک نامِ کاری است و هر زمان می‌توانیم عوضش کنیم.
 
+## اجرای سریع ویندوز — بدون مرورگر و بدون نصب ابزار توسعه
+
+فایل آمادهٔ native در [`downloads/FallenSignal-Windows-x64.zip`](downloads/FallenSignal-Windows-x64.zip) قرار دارد. برای اجرا به CMake، Visual Studio یا browser نیاز نیست؛ فقط Windows 10/11 x64 و OpenGL 3.3+ لازم است.
+
+اگر همین repository را clone کرده‌ای، در PowerShell این را بزن:
+
+```powershell
+git pull; Expand-Archive .\downloads\FallenSignal-Windows-x64.zip -DestinationPath .\FallenSignal -Force; Start-Process .\FallenSignal\FallenSignal.exe
+```
+
 ## در این نسخه چه ساخته شده است؟
 
 - **C++20 + OpenGL 3.3 Core**؛ هیچ game engine، Three.js، Unity یا Unreal استفاده نشده است.
