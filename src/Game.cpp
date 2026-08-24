@@ -5,76 +5,53 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cstddef>
 #include <cmath>
 #include <cstdio>
-#include <fstream>
 #include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
-
 namespace fallen {
 namespace {
 
 constexpr Vec3 kUp{0.0F, 1.0F, 0.0F};
-constexpr float kProjectileSpeed = 138.0F;
-constexpr float kMaxProjectileLifetime = 8.0F;
-constexpr std::size_t kMaximumAngels = 7;
+constexpr Vec3 kBallisticGravity{0.0F, -8.2F, 0.0F};
+constexpr float kProjectileSpeed = 230.0F;
+constexpr float kMaxProjectileLifetime = 9.0F;
+constexpr std::size_t kMaximumAngels = 6;
 
-std::string readPpmToken(std::istream& input) {
-    std::string token;
-    char character = '\0';
+float solveInterceptTime(const Vec3& relativePosition, const Vec3& targetVelocity) {
+    const float squaredSpeed = kProjectileSpeed * kProjectileSpeed;
+    const float quadratic = dot(targetVelocity, targetVelocity) - squaredSpeed;
+    const float linear = 2.0F * dot(relativePosition, targetVelocity);
+    const float constant = dot(relativePosition, relativePosition);
 
-    while (input.get(character)) {
-        if (character == '#') {
-            input.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-            continue;
+    if (std::abs(quadratic) < 0.0001F) {
+        if (std::abs(linear) < 0.0001F) {
+            return std::sqrt(constant) / kProjectileSpeed;
         }
-        if (!std::isspace(static_cast<unsigned char>(character))) {
-            token.push_back(character);
-            break;
-        }
+        const float time = -constant / linear;
+        return time > 0.0F ? time : std::sqrt(constant) / kProjectileSpeed;
     }
 
-    while (input.get(character)) {
-        if (std::isspace(static_cast<unsigned char>(character))) {
-            break;
-        }
-        token.push_back(character);
-    }
-    return token;
-}
-
-std::vector<unsigned char> loadPpm(const char* path, int& width, int& height) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) {
-        throw std::runtime_error(std::string("Could not open texture: ") + path);
+    const float discriminant = linear * linear - 4.0F * quadratic * constant;
+    if (discriminant < 0.0F) {
+        return std::sqrt(constant) / kProjectileSpeed;
     }
 
-    const std::string magic = readPpmToken(input);
-    if (magic != "P6") {
-        throw std::runtime_error(std::string("Texture is not a binary PPM: ") + path);
+    const float root = std::sqrt(discriminant);
+    const float first = (-linear - root) / (2.0F * quadratic);
+    const float second = (-linear + root) / (2.0F * quadratic);
+    float time = std::numeric_limits<float>::max();
+    if (first > 0.0F) {
+        time = first;
     }
-
-    width = std::stoi(readPpmToken(input));
-    height = std::stoi(readPpmToken(input));
-    const int maximum = std::stoi(readPpmToken(input));
-    if (width <= 0 || height <= 0 || maximum != 255) {
-        throw std::runtime_error(std::string("Unsupported PPM header: ") + path);
+    if (second > 0.0F) {
+        time = std::min(time, second);
     }
-
-    std::vector<unsigned char> pixels(static_cast<std::size_t>(width) * height * 3U);
-    input.read(reinterpret_cast<char*>(pixels.data()), static_cast<std::streamsize>(pixels.size()));
-    if (input.gcount() != static_cast<std::streamsize>(pixels.size())) {
-        throw std::runtime_error(std::string("Texture is truncated: ") + path);
-    }
-    return pixels;
+    return time == std::numeric_limits<float>::max() ? std::sqrt(constant) / kProjectileSpeed : time;
 }
 
 } // namespace
@@ -84,9 +61,6 @@ Game::Game(GLFWwindow* window)
 
 Game::~Game() {
     destroySceneTarget();
-    if (angelTexture_ != 0) {
-        glDeleteTextures(1, &angelTexture_);
-    }
     if (hudVertexBuffer_ != 0) {
         glDeleteBuffers(1, &hudVertexBuffer_);
     }
@@ -107,7 +81,6 @@ void Game::initialise() {
     trailLines_ = Mesh(std::vector<Vertex>{}, std::vector<std::uint32_t>{}, GL_LINES, GL_DYNAMIC_DRAW);
     projectileLines_ = Mesh(std::vector<Vertex>{}, std::vector<std::uint32_t>{}, GL_LINES, GL_DYNAMIC_DRAW);
     createHudBuffer();
-    loadAngelTexture();
 
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
@@ -187,7 +160,7 @@ void Game::render(int framebufferWidth, int framebufferHeight) {
     glEnable(GL_DEPTH_TEST);
 
     const float aspectRatio = static_cast<float>(framebufferWidth) / static_cast<float>(framebufferHeight);
-    const float fieldOfView = radians(28.0F / zoom_);
+    const float fieldOfView = radians(20.0F / zoom_);
     const Mat4 projection = Mat4::perspective(fieldOfView, aspectRatio, 0.20F, 2200.0F);
     const Vec3 forward = cameraForward();
     const Vec3 renderCamera = cameraPosition_ - forward * (recoil_ * 0.10F);
@@ -204,6 +177,7 @@ void Game::render(int framebufferWidth, int framebufferHeight) {
     postShader_.setFloat("uResolutionX", static_cast<float>(framebufferWidth));
     postShader_.setFloat("uResolutionY", static_cast<float>(framebufferHeight));
     postShader_.setFloat("uZoom", zoom_);
+    postShader_.setFloat("uKick", recoil_);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, sceneColorTexture_);
     skyQuad_.draw();
@@ -293,50 +267,6 @@ void Game::createHudBuffer() {
     glBindVertexArray(0);
 }
 
-void Game::loadAngelTexture() {
-    int width = 0;
-    int height = 0;
-    std::vector<std::string> candidates{"angel_sprite.ppm", "assets/angel_sprite.ppm"};
-
-#ifdef _WIN32
-    // A packaged EXE must find its sprite even when launched from another folder.
-    char executablePath[MAX_PATH]{};
-    const DWORD pathLength = GetModuleFileNameA(nullptr, executablePath, MAX_PATH);
-    if (pathLength > 0 && pathLength < MAX_PATH) {
-        const std::string fullPath(executablePath, pathLength);
-        const std::size_t separator = fullPath.find_last_of("\\/");
-        if (separator != std::string::npos) {
-            candidates.insert(candidates.begin(), fullPath.substr(0, separator + 1) + "angel_sprite.ppm");
-        }
-    }
-#endif
-
-    std::vector<unsigned char> pixels;
-    std::string lastError;
-    for (const std::string& candidate : candidates) {
-        try {
-            pixels = loadPpm(candidate.c_str(), width, height);
-            break;
-        } catch (const std::runtime_error& error) {
-            lastError = error.what();
-        }
-    }
-    if (pixels.empty()) {
-        throw std::runtime_error("Could not locate angel_sprite.ppm. " + lastError);
-    }
-
-    glGenTextures(1, &angelTexture_);
-    glBindTexture(GL_TEXTURE_2D, angelTexture_);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glGenerateMipmap(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, 0);
-}
-
 void Game::ensureSceneTarget(int width, int height) {
     if (sceneFramebuffer_ != 0 && sceneWidth_ == width && sceneHeight_ == height) {
         return;
@@ -405,8 +335,8 @@ void Game::setCursorCaptured(bool captured) {
 void Game::updateAim(float deltaSeconds) {
     float horizontalSpeed = 0.0F;
     float verticalSpeed = 0.0F;
-    constexpr float fastAimSpeed = 42.0F;
-    constexpr float fineAimSpeed = 8.0F;
+    constexpr float fastAimSpeed = 28.0F;
+    constexpr float fineAimSpeed = 5.0F;
 
     if (glfwGetKey(window_, GLFW_KEY_A) == GLFW_PRESS) {
         horizontalSpeed -= fastAimSpeed;
@@ -433,9 +363,9 @@ void Game::updateAim(float deltaSeconds) {
         verticalSpeed -= fineAimSpeed;
     }
 
-    // This is an optic mounted in an armoured system, not a free-flying camera.
-    yawDegrees_ = clamp(yawDegrees_ + horizontalSpeed * deltaSeconds + mouseDeltaX_ * 0.022F, -112.0F, -68.0F);
-    pitchDegrees_ = clamp(pitchDegrees_ + verticalSpeed * deltaSeconds - mouseDeltaY_ * 0.022F, -14.0F, 16.0F);
+    // A constrained sight aperture: the player moves an optic, never a free camera.
+    yawDegrees_ = clamp(yawDegrees_ + horizontalSpeed * deltaSeconds + mouseDeltaX_ * 0.014F, -102.0F, -78.0F);
+    pitchDegrees_ = clamp(pitchDegrees_ + verticalSpeed * deltaSeconds - mouseDeltaY_ * 0.014F, -8.0F, 12.0F);
     mouseDeltaX_ = 0.0F;
     mouseDeltaY_ = 0.0F;
 
@@ -448,7 +378,7 @@ void Game::updateAim(float deltaSeconds) {
     }
     if (zoomDirection != 0.0F) {
         const float previousZoom = zoom_;
-        zoom_ = clamp(zoom_ + zoomDirection * deltaSeconds * 0.72F, 1.0F, 3.2F);
+        zoom_ = clamp(zoom_ + zoomDirection * deltaSeconds * 0.55F, 1.0F, 2.6F);
         if (zoom_ != previousZoom) {
             zoomPulse_ = 1.0F;
         }
@@ -498,7 +428,8 @@ void Game::updateAngels(float deltaSeconds) {
 void Game::updateProjectiles(float deltaSeconds) {
     for (Projectile& projectile : projectiles_) {
         projectile.previousPosition = projectile.position;
-        projectile.position += projectile.velocity * deltaSeconds;
+        projectile.position += projectile.velocity * deltaSeconds + kBallisticGravity * (0.5F * deltaSeconds * deltaSeconds);
+        projectile.velocity += kBallisticGravity * deltaSeconds;
         projectile.age += deltaSeconds;
         projectile.trail.push_back(projectile.position);
         if (projectile.trail.size() > 15) {
@@ -536,22 +467,22 @@ void Game::resetAngel(Angel& angel, bool immediatelyVisible) {
     const Vec3 forward = cameraForward();
     const Vec3 flatForward = normalise({forward.x, 0.0F, forward.z});
     const Vec3 right = normalise(cross(flatForward, kUp));
-    const float speed = randomRange(31.0F, 57.0F);
+    const float speed = randomRange(38.0F, 66.0F);
 
     angel.heading = flatForward;
     angel.side = right;
-    angel.velocity = flatForward * speed + right * randomRange(-3.8F, 3.8F);
-    angel.scale = randomRange(1.15F, 2.20F);
-    angel.waveAmplitude = randomRange(0.7F, 3.8F);
-    angel.waveFrequency = randomRange(0.38F, 0.92F);
+    angel.velocity = flatForward * speed + right * randomRange(-3.0F, 3.0F);
+    angel.scale = randomRange(1.35F, 2.95F);
+    angel.waveAmplitude = randomRange(0.35F, 2.6F);
+    angel.waveFrequency = randomRange(0.24F, 0.68F);
     angel.phase = randomRange(0.0F, 2.0F * kPi);
-    angel.baseAltitude = cameraPosition_.y + randomRange(8.0F, 46.0F);
+    angel.baseAltitude = cameraPosition_.y + randomRange(10.0F, 44.0F);
 
     if (immediatelyVisible) {
-        const float distance = randomRange(135.0F, 420.0F);
-        angel.position = cameraPosition_ + flatForward * distance + right * randomRange(-distance * 0.14F, distance * 0.14F);
+        const float distance = randomRange(420.0F, 980.0F);
+        angel.position = cameraPosition_ + flatForward * distance + right * randomRange(-distance * 0.075F, distance * 0.075F);
     } else {
-        angel.position = cameraPosition_ - flatForward * randomRange(85.0F, 260.0F) + right * randomRange(-95.0F, 95.0F);
+        angel.position = cameraPosition_ - flatForward * randomRange(260.0F, 760.0F) + right * randomRange(-78.0F, 78.0F);
     }
     angel.position.y = angel.baseAltitude + std::sin(angel.phase) * angel.waveAmplitude;
 
@@ -564,7 +495,7 @@ void Game::resetAngel(Angel& angel, bool immediatelyVisible) {
 }
 
 void Game::fire() {
-    if (fireCooldown_ > 0.0F || projectiles_.size() >= 22) {
+    if (fireCooldown_ > 0.0F || projectiles_.size() >= 12) {
         return;
     }
 
@@ -572,20 +503,35 @@ void Game::fire() {
     Projectile projectile{};
     projectile.position = cameraPosition_ + forward * 1.4F + Vec3{0.0F, -0.18F, 0.0F};
     projectile.previousPosition = projectile.position;
-    projectile.velocity = forward * kProjectileSpeed;
-    projectile.trail.push_back(projectile.position - projectile.velocity * 0.07F);
+
+    // A restrained fire-control assist leads a locked moving signal and compensates
+    // for shell drop. Outside a lock, the player still fires exactly along the optic.
+    Vec3 shotDirection = forward;
+    if (lockedAngel_ >= 0 && lockedAngel_ < static_cast<int>(angels_.size()) && fireControlFlightSeconds_ > 0.0F) {
+        const Angel& target = angels_[static_cast<std::size_t>(lockedAngel_)];
+        Vec3 compensatedPoint = fireControlPoint_;
+        float refinedTime = length(compensatedPoint - projectile.position) / kProjectileSpeed;
+        compensatedPoint = target.position + target.velocity * refinedTime
+            - kBallisticGravity * (0.5F * refinedTime * refinedTime);
+        shotDirection = normalise(compensatedPoint - projectile.position);
+    }
+
+    projectile.velocity = shotDirection * kProjectileSpeed;
+    projectile.trail.push_back(projectile.position - projectile.velocity * 0.055F);
     projectile.trail.push_back(projectile.position);
     projectiles_.push_back(std::move(projectile));
 
-    fireCooldown_ = 0.18F;
+    fireCooldown_ = 0.62F;
     recoil_ = 1.0F;
 }
 
 void Game::acquireLock() {
     lockedAngel_ = -1;
     lockedDistance_ = 0.0F;
+    fireControlFlightSeconds_ = 0.0F;
+    fireControlPoint_ = {};
     const Vec3 forward = cameraForward();
-    const float coneRadians = radians(0.92F) / zoom_;
+    const float coneRadians = radians(0.58F) / zoom_;
     const float minimumDot = std::cos(coneRadians);
     float bestDot = minimumDot;
 
@@ -605,6 +551,14 @@ void Game::acquireLock() {
             lockedAngel_ = static_cast<int>(index);
             lockedDistance_ = distance;
         }
+    }
+
+    if (lockedAngel_ >= 0) {
+        const Angel& target = angels_[static_cast<std::size_t>(lockedAngel_)];
+        fireControlFlightSeconds_ = solveInterceptTime(target.position - cameraPosition_, target.velocity);
+        fireControlFlightSeconds_ = clamp(fireControlFlightSeconds_, 0.05F, kMaxProjectileLifetime);
+        fireControlPoint_ = target.position + target.velocity * fireControlFlightSeconds_
+            - kBallisticGravity * (0.5F * fireControlFlightSeconds_ * fireControlFlightSeconds_);
     }
 }
 
@@ -628,10 +582,10 @@ void Game::resetEncounter() {
     if (!angels_.empty()) {
         Angel& guide = angels_.front();
         const Vec3 forward = normalise({cameraForward().x, 0.0F, cameraForward().z});
-        guide.position = cameraPosition_ + forward * 215.0F;
-        guide.baseAltitude = cameraPosition_.y + 12.0F;
+        guide.position = cameraPosition_ + forward * 620.0F;
+        guide.baseAltitude = cameraPosition_.y + 8.0F;
         guide.position.y = guide.baseAltitude;
-        guide.waveAmplitude = 1.0F;
+        guide.waveAmplitude = 0.65F;
         guide.trail.clear();
         for (int sample = 0; sample < 22; ++sample) {
             guide.trail.push_back(guide.position - guide.velocity * (static_cast<float>(22 - sample) * 0.05F));
@@ -642,7 +596,7 @@ void Game::resetEncounter() {
 
 void Game::updateWindowTitle() {
     const int rangeMetres = lockedAngel_ >= 0 ? static_cast<int>(lockedDistance_) : 0;
-    const float flightSeconds = lockedAngel_ >= 0 ? lockedDistance_ / kProjectileSpeed : 0.0F;
+    const float flightSeconds = lockedAngel_ >= 0 ? fireControlFlightSeconds_ : 0.0F;
     char title[256]{};
     std::snprintf(title, sizeof(title),
                   "FALLEN SIGNAL | %s | RANGE %04dm | OPTIC x%.1f | FLIGHT %.2fs | RESOLVED %02d",
@@ -678,7 +632,7 @@ bool Game::projectileHitsAngel(const Projectile& projectile, const Angel& angel)
 
     const float interpolation = clamp(dot(angel.position - projectile.previousPosition, segment) / segmentLengthSquared, 0.0F, 1.0F);
     const Vec3 nearestPoint = projectile.previousPosition + segment * interpolation;
-    const float hitRadius = angel.scale * 3.0F;
+    const float hitRadius = angel.scale * 3.8F;
     return lengthSquared(angel.position - nearestPoint) <= hitRadius * hitRadius;
 }
 
@@ -715,14 +669,11 @@ void Game::renderAngel(const Angel& angel, const Mat4& view, const Mat4& project
     angelShader_.setVec3("uCameraRight", right);
     angelShader_.setVec3("uCameraUp", up);
     angelShader_.setVec3("uFogColor", {0.008F, 0.092F, 0.082F});
-    angelShader_.setFloat("uScale", angel.scale * 2.1F * (1.0F + std::max(0.0F, angel.disruption) * 0.24F));
+    angelShader_.setFloat("uScale", angel.scale * 1.55F * (1.0F + std::max(0.0F, angel.disruption) * 0.24F));
     angelShader_.setFloat("uDistance", distance);
     angelShader_.setFloat("uDisruption", std::max(0.0F, angel.disruption));
     angelShader_.setFloat("uTime", elapsedSeconds_);
-    angelShader_.setInt("uAngelTexture", 0);
-
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, angelTexture_);
+    angelShader_.setFloat("uSeed", angel.phase);
     glDisable(GL_CULL_FACE);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -730,7 +681,6 @@ void Game::renderAngel(const Angel& angel, const Mat4& view, const Mat4& project
     skyQuad_.draw();
     glDepthMask(GL_TRUE);
     glEnable(GL_CULL_FACE);
-    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 void Game::renderTrails(const Mat4& view, const Mat4& projection) {
@@ -844,13 +794,13 @@ void Game::renderHud() {
     addHudLine(vertices, 0.0F, -aperture, 0.0F, aperture, graphite);
 
     const int range = lockedAngel_ >= 0 ? static_cast<int>(lockedDistance_) : 0;
-    const int flightCentiseconds = lockedAngel_ >= 0 ? static_cast<int>((lockedDistance_ / kProjectileSpeed) * 100.0F) : 0;
+    const int flightCentiseconds = lockedAngel_ >= 0 ? static_cast<int>(fireControlFlightSeconds_ * 100.0F) : 0;
     addHudNumber(vertices, range, 3, -0.88F, 0.27F, 0.022F, fadedInk);
     addHudNumber(vertices, flightCentiseconds, 2, 0.76F, 0.27F, 0.022F, fadedInk);
     addHudNumber(vertices, signalsResolved_, 2, -0.90F, -0.86F, 0.021F, fadedInk);
 
     if (fireCooldown_ > 0.0F || zoomPulse_ > 0.0F) {
-        const float pulse = fireCooldown_ > 0.0F ? fireCooldown_ / 0.18F : zoomPulse_;
+        const float pulse = fireCooldown_ > 0.0F ? clamp(fireCooldown_ / 0.62F, 0.0F, 1.0F) : zoomPulse_;
         const float radius = aperture * (3.0F + (1.0F - pulse) * 2.4F);
         for (int section = 0; section < 12; ++section) {
             const float first = 2.0F * kPi * static_cast<float>(section) / 12.0F;

@@ -154,11 +154,11 @@ inline constexpr char angelFragment[] = R"GLSL(
 #version 330 core
 in vec2 vUv;
 
-uniform sampler2D uAngelTexture;
 uniform vec3 uFogColor;
 uniform float uDistance;
 uniform float uDisruption;
 uniform float uTime;
+uniform float uSeed;
 
 out vec4 outColor;
 
@@ -168,23 +168,54 @@ float hash21(vec2 value) {
     return fract(value.x * value.y);
 }
 
+float segmentMask(vec2 point, vec2 start, vec2 end, float radius) {
+    vec2 segment = end - start;
+    float projection = clamp(dot(point - start, segment) / max(dot(segment, segment), 0.0001), 0.0, 1.0);
+    float distanceToSegment = length(point - (start + segment * projection));
+    return 1.0 - smoothstep(radius * 0.42, radius, distanceToSegment);
+}
+
+float ellipseMask(vec2 point, vec2 center, vec2 radii) {
+    return 1.0 - smoothstep(0.78, 1.0, length((point - center) / radii));
+}
+
 void main() {
-    vec3 source = texture(uAngelTexture, vUv).rgb;
-    float luminance = dot(source, vec3(0.2126, 0.7152, 0.0722));
-    float alpha = smoothstep(0.030, 0.285, luminance);
+    // The signal is deliberately procedural: distant feather-like light, not a pasted image.
+    vec2 point = vUv * 2.0 - 1.0;
+    point.x *= 0.92;
+    float flap = sin(uTime * 2.4 + uSeed) * 0.075;
 
-    // Makes the source feel like a photographed, dissolving signal rather than a hard cut-out.
-    float edgeNoise = hash21(floor(vUv * 210.0) + floor(uTime * 22.0));
-    alpha *= smoothstep(0.10, 0.88, edgeNoise + luminance * 0.55);
-    float atmosphericFade = exp(-uDistance * 0.0018);
-    alpha *= mix(0.35, 1.0, atmosphericFade);
+    float body = ellipseMask(point, vec2(0.0, 0.10), vec2(0.115, 0.31));
+    float head = ellipseMask(point, vec2(0.0, -0.245), vec2(0.095, 0.095));
+    float tail = segmentMask(point, vec2(0.0, 0.31), vec2(0.0, 0.73), 0.13);
+    float wings = 0.0;
 
-    vec3 coldWhite = mix(vec3(0.28, 0.72, 0.70), vec3(1.0, 1.0, 0.96), clamp(luminance * 1.35, 0.0, 1.0));
-    vec3 color = mix(coldWhite, source, 0.36);
-    color = mix(color, vec3(0.95, 0.10, 0.025), clamp(uDisruption * 0.82, 0.0, 1.0));
+    for (int sideIndex = 0; sideIndex < 2; ++sideIndex) {
+        float side = sideIndex == 0 ? -1.0 : 1.0;
+        vec2 root = vec2(side * 0.045, 0.01);
+        for (int featherIndex = 0; featherIndex < 10; ++featherIndex) {
+            float fraction = float(featherIndex) / 9.0;
+            float arc = -0.38 - fraction * 0.52 + flap * (0.25 + fraction * 0.55);
+            vec2 tip = vec2(side * (0.22 + fraction * 0.78), arc);
+            float width = mix(0.145, 0.040, fraction);
+            wings = max(wings, segmentMask(point, root, tip, width));
+        }
+        // Translucent wing membrane makes individual feather lines read as a single distant silhouette.
+        wings = max(wings, ellipseMask(point, vec2(side * 0.34, -0.18 + flap * 0.3), vec2(0.47, 0.38)) * 0.42);
+    }
 
-    float fog = 1.0 - exp(-uDistance * 0.0016);
-    color = mix(color, uFogColor, fog * 0.62);
+    float signal = max(max(body, head), max(tail, wings));
+    float particulate = hash21(floor(point * 115.0) + floor(uTime * 19.0) + uSeed);
+    signal *= smoothstep(0.08, 0.95, particulate + signal * 0.42);
+
+    float atmosphericFade = exp(-uDistance * 0.00058);
+    float alpha = signal * mix(0.22, 0.92, atmosphericFade);
+    float core = max(body, head);
+    vec3 color = mix(vec3(0.20, 0.54, 0.48), vec3(0.92, 1.0, 0.90), core * 0.92 + wings * 0.35);
+    color = mix(color, vec3(0.82, 0.075, 0.018), clamp(uDisruption * 0.86, 0.0, 1.0));
+
+    float fog = 1.0 - exp(-uDistance * 0.0011);
+    color = mix(color, uFogColor, fog * 0.45);
     outColor = vec4(color, alpha);
 }
 )GLSL";
@@ -208,6 +239,7 @@ uniform float uTime;
 uniform float uResolutionX;
 uniform float uResolutionY;
 uniform float uZoom;
+uniform float uKick;
 out vec4 outColor;
 
 float hash21(vec2 value) {
@@ -230,6 +262,11 @@ void main() {
     color.r = sampleScene(vUv + aberration).r;
     color.g = sampleScene(vUv).g;
     color.b = sampleScene(vUv - aberration).b;
+
+    // Short recoil smear gives each shell a physical, heavy optical response.
+    vec2 kickOffset = vec2(0.0, uKick * 0.0075);
+    vec3 recoilBlur = (sampleScene(vUv + kickOffset) + sampleScene(vUv + kickOffset * 0.45) + color) / 3.0;
+    color = mix(color, recoilBlur, clamp(uKick * 0.42, 0.0, 0.42));
 
     // Small, restrained bloom is what turns the white signal into a filmed light source.
     vec3 blur = vec3(0.0);

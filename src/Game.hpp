@@ -79,7 +79,6 @@ private:
     Mesh trailLines_{};
     Mesh projectileLines_{};
 
-    GLuint angelTexture_ = 0;
     GLuint sceneFramebuffer_ = 0;
     GLuint sceneColorTexture_ = 0;
     GLuint sceneDepthBuffer_ = 0;
@@ -104,6 +103,8 @@ private:
     float zoomPulse_ = 0.0F;
     int lockedAngel_ = -1;
     float lockedDistance_ = 0.0F;
+    float fireControlFlightSeconds_ = 0.0F;
+    Vec3 fireControlPoint_{};
     int signalsResolved_ = 0;
     bool previousSpaceDown_ = false;
     bool previousEscapeDown_ = false;
@@ -123,7 +124,6 @@ private:
     static Mesh makeSkyQuad();
 
     void createHudBuffer();
-    void loadAngelTexture();
     void ensureSceneTarget(int width, int height);
     void destroySceneTarget() noexcept;
     void setCursorCaptured(bool captured);
