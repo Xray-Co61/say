@@ -54,6 +54,112 @@ float solveInterceptTime(const Vec3& relativePosition, const Vec3& targetVelocit
     return time == std::numeric_limits<float>::max() ? std::sqrt(constant) / kProjectileSpeed : time;
 }
 
+void appendTriangle(std::vector<Vertex>& vertices,
+                    const Vec3& first, const Vec3& second, const Vec3& third,
+                    const Vec3& color) {
+    const Vec3 normal = normalise(cross(second - first, third - first));
+    vertices.push_back({first, normal, color});
+    vertices.push_back({second, normal, color});
+    vertices.push_back({third, normal, color});
+}
+
+void appendQuad(std::vector<Vertex>& vertices,
+                const Vec3& first, const Vec3& second,
+                const Vec3& third, const Vec3& fourth,
+                const Vec3& color) {
+    appendTriangle(vertices, first, second, third, color);
+    appendTriangle(vertices, first, third, fourth, color);
+}
+
+void appendEllipsoid(std::vector<Vertex>& vertices, const Vec3& center, const Vec3& radius,
+                     int rings, int slices, const Vec3& color) {
+    for (int ring = 0; ring < rings; ++ring) {
+        const float lowTheta = -kPi * 0.5F + kPi * static_cast<float>(ring) / rings;
+        const float highTheta = -kPi * 0.5F + kPi * static_cast<float>(ring + 1) / rings;
+        for (int slice = 0; slice < slices; ++slice) {
+            const float lowPhi = 2.0F * kPi * static_cast<float>(slice) / slices;
+            const float highPhi = 2.0F * kPi * static_cast<float>(slice + 1) / slices;
+            const auto point = [&](float theta, float phi) {
+                return center + Vec3{
+                    radius.x * std::cos(theta) * std::cos(phi),
+                    radius.y * std::sin(theta),
+                    radius.z * std::cos(theta) * std::sin(phi),
+                };
+            };
+            appendQuad(vertices, point(lowTheta, lowPhi), point(lowTheta, highPhi),
+                       point(highTheta, highPhi), point(highTheta, lowPhi), color);
+        }
+    }
+}
+
+void appendFeather(std::vector<Vertex>& vertices, const Vec3& root, const Vec3& bend,
+                   const Vec3& tip, float width, const Vec3& color) {
+    const Vec3 axis = normalise(tip - root);
+    Vec3 lateral = normalise(cross(axis, kUp));
+    if (lengthSquared(lateral) < 0.001F) {
+        lateral = {0.0F, 0.0F, 1.0F};
+    }
+    const Vec3 ridge{0.0F, 0.025F, 0.0F};
+    const Vec3 rootLeft = root - lateral * width;
+    const Vec3 rootRight = root + lateral * width;
+    const Vec3 bendLeft = bend - lateral * (width * 0.68F) + ridge;
+    const Vec3 bendRight = bend + lateral * (width * 0.68F) + ridge;
+    const Vec3 tipLeft = tip - lateral * (width * 0.11F);
+    const Vec3 tipRight = tip + lateral * (width * 0.11F);
+
+    appendQuad(vertices, rootLeft, rootRight, bendRight, bendLeft, color);
+    appendQuad(vertices, bendLeft, bendRight, tipRight, tipLeft, color);
+}
+
+Mesh makeSignalBodyMesh() {
+    std::vector<Vertex> vertices;
+    appendEllipsoid(vertices, {0.0F, 0.0F, 0.0F}, {0.48F, 0.38F, 1.18F}, 16, 22, {0.54F, 0.72F, 0.65F});
+    appendEllipsoid(vertices, {0.0F, 0.14F, -0.98F}, {0.29F, 0.26F, 0.31F}, 12, 18, {0.66F, 0.82F, 0.73F});
+
+    // Tail fan: individual feathers break the otherwise smooth body silhouette.
+    for (int feather = -4; feather <= 4; ++feather) {
+        const float fraction = static_cast<float>(feather) / 4.0F;
+        appendFeather(vertices,
+                      {fraction * 0.10F, -0.02F, 0.80F},
+                      {fraction * 0.22F, 0.02F, 1.28F},
+                      {fraction * 0.42F, -0.02F, 1.82F},
+                      0.11F,
+                      {0.42F, 0.65F, 0.58F});
+    }
+
+    // A very small beak makes the silhouette read as a living bird at closer ranges.
+    appendTriangle(vertices, {-0.10F, 0.12F, -1.22F}, {0.10F, 0.12F, -1.22F},
+                   {0.0F, 0.10F, -1.56F}, {0.42F, 0.26F, 0.12F});
+    return Mesh(vertices);
+}
+
+Mesh makeSignalWingMesh(float side) {
+    std::vector<Vertex> vertices;
+    constexpr int featherCount = 28;
+    for (int feather = 0; feather < featherCount; ++feather) {
+        const float fraction = static_cast<float>(feather) / static_cast<float>(featherCount - 1);
+        const float stagger = std::sin(fraction * kPi) * 0.18F;
+        const Vec3 root{side * (0.18F + fraction * 0.28F), 0.02F - fraction * 0.045F, -0.06F + fraction * 0.34F};
+        const Vec3 bend{side * (1.00F + fraction * 1.08F), 0.05F + fraction * 0.18F, 0.05F + fraction * 0.62F};
+        const Vec3 tip{side * (2.15F + fraction * 2.15F), 0.11F + fraction * 0.42F + stagger, 0.22F + fraction * 1.06F};
+        const float width = 0.20F * (1.0F - fraction) + 0.045F * fraction;
+        const Vec3 color = lerp(Vec3{0.22F, 0.42F, 0.37F}, Vec3{0.72F, 0.92F, 0.80F}, fraction * 0.72F);
+        appendFeather(vertices, root, bend, tip, width, color);
+    }
+
+    // Short coverts layer over the feather roots and hide the mechanical wing joint.
+    for (int covert = 0; covert < 9; ++covert) {
+        const float fraction = static_cast<float>(covert) / 8.0F;
+        appendFeather(vertices,
+                      {side * 0.12F, 0.05F, -0.04F + fraction * 0.25F},
+                      {side * (0.58F + fraction * 0.44F), 0.09F, 0.05F + fraction * 0.36F},
+                      {side * (1.32F + fraction * 0.65F), 0.14F, 0.18F + fraction * 0.54F},
+                      0.16F * (1.0F - fraction) + 0.06F * fraction,
+                      {0.36F, 0.58F, 0.50F});
+    }
+    return Mesh(vertices);
+}
+
 } // namespace
 
 Game::Game(GLFWwindow* window)
@@ -72,12 +178,15 @@ Game::~Game() {
 void Game::initialise() {
     worldShader_ = Shader(shaders::worldVertex, shaders::worldFragment, "world");
     skyShader_ = Shader(shaders::skyVertex, shaders::skyFragment, "sky");
-    angelShader_ = Shader(shaders::angelVertex, shaders::angelFragment, "angel signal");
+    birdShader_ = Shader(shaders::birdVertex, shaders::birdFragment, "procedural bird");
     projectileShader_ = Shader(shaders::angelVertex, shaders::projectileFragment, "red shell");
     postShader_ = Shader(shaders::postVertex, shaders::postFragment, "cinematic post");
     hudShader_ = Shader(shaders::hudVertex, shaders::hudFragment, "optic hud");
 
     terrain_ = makeTerrain();
+    birdBody_ = makeSignalBodyMesh();
+    leftBirdWing_ = makeSignalWingMesh(-1.0F);
+    rightBirdWing_ = makeSignalWingMesh(1.0F);
     skyQuad_ = makeSkyQuad();
     trailLines_ = Mesh(std::vector<Vertex>{}, std::vector<std::uint32_t>{}, GL_LINES, GL_DYNAMIC_DRAW);
     projectileLines_ = Mesh(std::vector<Vertex>{}, std::vector<std::uint32_t>{}, GL_LINES, GL_DYNAMIC_DRAW);
@@ -659,31 +768,34 @@ void Game::renderWorld(const Mat4& view, const Mat4& projection) {
 }
 
 void Game::renderAngel(const Angel& angel, const Mat4& view, const Mat4& projection) {
-    const Vec3 forward = cameraForward();
-    const Vec3 right = cameraRight();
-    const Vec3 up = normalise(cross(right, forward));
     const float distance = length(angel.position - cameraPosition_);
-
-    angelShader_.use();
-    angelShader_.setMat4("uView", view);
-    angelShader_.setMat4("uProjection", projection);
-    angelShader_.setVec3("uCenter", angel.position);
-    angelShader_.setVec3("uCameraRight", right);
-    angelShader_.setVec3("uCameraUp", up);
-    angelShader_.setVec3("uFogColor", {0.008F, 0.092F, 0.082F});
-    angelShader_.setFloat("uScale", angel.scale * 1.55F * (1.0F + std::max(0.0F, angel.disruption) * 0.24F));
-    angelShader_.setFloat("uDistance", distance);
-    angelShader_.setFloat("uDisruption", std::max(0.0F, angel.disruption));
-    angelShader_.setFloat("uTime", elapsedSeconds_);
-    angelShader_.setFloat("uSeed", angel.phase);
     const float belowAngle = clamp(((angel.position.y - cameraPosition_.y) / std::max(distance, 0.001F) - 0.07F) / 0.28F, 0.0F, 1.0F);
-    angelShader_.setFloat("uBelowAngle", belowAngle);
+    const float headingAngle = std::atan2(-angel.heading.x, -angel.heading.z);
+    const float wingBeat = std::sin(elapsedSeconds_ * 4.0F + angel.phase) * 0.22F;
+    const float disruptionScale = 1.0F + std::max(0.0F, angel.disruption) * 0.18F;
+    const Mat4 baseTransform = Mat4::translation(angel.position)
+        * Mat4::rotationY(headingAngle)
+        * Mat4::scale(angel.scale * disruptionScale);
+
+    birdShader_.use();
+    birdShader_.setMat4("uView", view);
+    birdShader_.setMat4("uProjection", projection);
+    birdShader_.setVec3("uCameraPosition", cameraPosition_);
+    birdShader_.setVec3("uFogColor", {0.008F, 0.092F, 0.082F});
+    birdShader_.setVec3("uLightDirection", {-0.28F, 0.68F, 0.31F});
+    birdShader_.setFloat("uUnderView", belowAngle);
+    birdShader_.setFloat("uDisruption", std::max(0.0F, angel.disruption));
+    birdShader_.setFloat("uTime", elapsedSeconds_);
+
+    // Feather geometry is real 3D geometry: the view is from below the flight path,
+    // so wing depth and the dark underwing are visible instead of a face-on card.
     glDisable(GL_CULL_FACE);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glDepthMask(GL_FALSE);
-    skyQuad_.draw();
-    glDepthMask(GL_TRUE);
+    birdShader_.setMat4("uModel", baseTransform * Mat4::rotationX(-belowAngle * 0.10F));
+    birdBody_.draw();
+    birdShader_.setMat4("uModel", baseTransform * Mat4::rotationZ(-wingBeat - 0.08F));
+    leftBirdWing_.draw();
+    birdShader_.setMat4("uModel", baseTransform * Mat4::rotationZ(wingBeat + 0.08F));
+    rightBirdWing_.draw();
     glEnable(GL_CULL_FACE);
 }
 

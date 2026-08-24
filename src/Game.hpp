@@ -70,12 +70,15 @@ private:
 
     Shader worldShader_{};
     Shader skyShader_{};
-    Shader angelShader_{};
+    Shader birdShader_{};
     Shader projectileShader_{};
     Shader postShader_{};
     Shader hudShader_{};
 
     Mesh terrain_{};
+    Mesh birdBody_{};
+    Mesh leftBirdWing_{};
+    Mesh rightBirdWing_{};
     Mesh skyQuad_{};
     Mesh trailLines_{};
     Mesh projectileLines_{};

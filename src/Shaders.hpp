@@ -127,6 +127,81 @@ void main() {
 }
 )GLSL";
 
+inline constexpr char birdVertex[] = R"GLSL(
+#version 330 core
+layout (location = 0) in vec3 aPosition;
+layout (location = 1) in vec3 aNormal;
+layout (location = 2) in vec3 aColor;
+
+uniform mat4 uModel;
+uniform mat4 uView;
+uniform mat4 uProjection;
+
+out vec3 vWorldPosition;
+out vec3 vNormal;
+out vec3 vColor;
+out vec3 vLocalPosition;
+
+void main() {
+    vec4 worldPosition = uModel * vec4(aPosition, 1.0);
+    vWorldPosition = worldPosition.xyz;
+    vNormal = mat3(transpose(inverse(uModel))) * aNormal;
+    vColor = aColor;
+    vLocalPosition = aPosition;
+    gl_Position = uProjection * uView * worldPosition;
+}
+)GLSL";
+
+inline constexpr char birdFragment[] = R"GLSL(
+#version 330 core
+in vec3 vWorldPosition;
+in vec3 vNormal;
+in vec3 vColor;
+in vec3 vLocalPosition;
+
+uniform vec3 uCameraPosition;
+uniform vec3 uFogColor;
+uniform vec3 uLightDirection;
+uniform float uUnderView;
+uniform float uDisruption;
+uniform float uTime;
+
+out vec4 outColor;
+
+float hash31(vec3 value) {
+    value = fract(value * 0.1031);
+    value += dot(value, value.yzx + 33.33);
+    return fract((value.x + value.y) * value.z);
+}
+
+void main() {
+    vec3 normal = normalize(vNormal);
+    if (!gl_FrontFacing) {
+        normal = -normal;
+    }
+    vec3 light = normalize(uLightDirection);
+    vec3 viewDirection = normalize(uCameraPosition - vWorldPosition);
+    float diffuse = max(dot(normal, light), 0.0);
+    float backLight = pow(max(dot(-normal, light), 0.0), 2.1);
+    float rim = pow(1.0 - max(dot(normal, viewDirection), 0.0), 3.0);
+
+    // Fine per-feather variation without a texture: enough irregularity to avoid a plastic surface.
+    float fiber = hash31(floor(vLocalPosition * 18.0 + vec3(0.0, uTime * 0.16, 0.0)));
+    float featherLight = smoothstep(0.24, 0.92, abs(vLocalPosition.x) / 4.4);
+    vec3 underColor = mix(vec3(0.075, 0.20, 0.17), vec3(0.56, 0.82, 0.70), featherLight);
+    vec3 topColor = vColor * (0.18 + diffuse * 0.74) + vec3(0.05, 0.17, 0.13) * backLight;
+    vec3 color = mix(topColor, underColor * (0.35 + diffuse * 0.45), uUnderView);
+    color += vec3(0.015, 0.055, 0.042) * rim;
+    color += (fiber - 0.5) * vec3(0.025, 0.050, 0.038);
+    color = mix(color, vec3(0.90, 0.07, 0.018), clamp(uDisruption * 0.88, 0.0, 1.0));
+
+    float distanceToCamera = length(uCameraPosition - vWorldPosition);
+    float fog = 1.0 - exp(-distanceToCamera * 0.0027);
+    color = mix(color, uFogColor, clamp(fog, 0.0, 0.92));
+    outColor = vec4(max(color, vec3(0.0)), 1.0);
+}
+)GLSL";
+
 inline constexpr char angelVertex[] = R"GLSL(
 #version 330 core
 layout (location = 0) in vec3 aPosition;
