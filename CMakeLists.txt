@@ -10,11 +10,20 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Use the static MSVC runtime for every target, including GLFW and GLAD. This
+# makes the distributed Release executable self-contained apart from Windows'
+# own graphics DLLs.
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 option(FALLEN_SIGNAL_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
 include(FetchContent)
 
 # GLFW only owns the OS window, input events, and OpenGL context. It is not a game engine.
+# Keep its library static so the packaged game remains a single executable.
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
