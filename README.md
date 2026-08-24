@@ -45,6 +45,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run.ps1
 
 در اجرای اول، CMake خودش GLFW را دانلود می‌کند؛ سپس پروژه را می‌سازد و `fallen_signal.exe` را اجرا می‌کند. GLAD از قبل به‌شکل source تولیدشده در `third_party/glad` قرار دارد تا نیازی به Python یا نصب ابزار جانبی دیگر نباشد.
 
+اگر هنوز سورس را clone نکرده‌ای، این **یک خط** هم پروژه را دانلود می‌کند و هم اجرا را آغاز می‌کند:
+
+```powershell
+git clone --branch arena/01a034f2-say --single-branch https://github.com/Xray-Co61/say.git fallen-signal; Set-Location .\fallen-signal; powershell -ExecutionPolicy Bypass -File .\scripts\run.ps1
+```
+
 اگر ترجیح می‌دهی بدون اسکریپت اجرا کنی:
 
 ```powershell
